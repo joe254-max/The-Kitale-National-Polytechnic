@@ -1,0 +1,8 @@
+{
+  "name": "Copy of The Kitale National Polytechnic Library",
+  "description": "An enterprise-grade digital resource management system for polytechnic institutions, featuring role-based access, academic department categorization, and smart resource discovery.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
