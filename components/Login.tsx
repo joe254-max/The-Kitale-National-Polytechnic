@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { UserRole, User } from '../types';
 import { DEPARTMENTS } from '../constants';
-import { ShieldCheck, ShieldAlert, Fingerprint, Key, ArrowLeft, RefreshCw, CheckCircle2, Lock } from 'lucide-react';
+import { School, ShieldAlert, Fingerprint, Key, ArrowLeft, RefreshCw, CheckCircle2, Lock } from 'lucide-react';
 
+// Define the missing LoginProps interface
 interface LoginProps {
-  onLogin: (u: User, remember: boolean) => void;
+  onLogin: (user: User, remember: boolean) => void;
 }
 
 const QUOTES = [
@@ -176,23 +177,23 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
         <div className="relative z-30 flex items-center gap-4">
           <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center text-[#3d0413] shadow-2xl shrink-0 group transition-transform hover:scale-110">
-            <ShieldCheck size={32} strokeWidth={2.5} />
+            <School size={32} strokeWidth={2.5} />
           </div>
           <div className="flex flex-col text-white drop-shadow-lg">
             <span className="text-2xl font-black tracking-tight uppercase leading-none">
               The Kitale National
             </span>
             <span className="text-2xl font-black tracking-tight uppercase leading-none mt-1">
-              Polytechnic Library
+              Polytechnic
             </span>
           </div>
         </div>
 
         <div className="relative z-30 max-w-xl mb-12">
           <h2 className="text-6xl font-black mb-10 leading-tight text-white tracking-tighter drop-shadow-2xl">
-            {mode === 'login' ? 'Gateway to' : mode === 'register' ? 'Join the Online' : mode === '2fa' ? 'Verify Secure' : 'Access'} <br /> 
+            {mode === 'login' ? 'Access' : mode === 'register' ? 'Join' : mode === '2fa' ? 'Verify' : 'Recover'} <br /> 
             <span className="text-rose-400">
-              {mode === 'forgot-password' ? 'Recovery Hub.' : mode === '2fa' ? 'Staff Access.' : 'Knowledge Hub.'}
+              The Kitale National Polytechnic
             </span>
           </h2>
           
@@ -298,7 +299,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
               </div>
               <p className="text-slate-500 mb-10 font-medium">
                 {mode === 'login' 
-                  ? 'Identify yourself to enter the institutional repository.' 
+                  ? 'Identify yourself to enter the institutional node.' 
                   : mode === 'register' 
                   ? 'Set up your professional credentials for the polytechnic network.'
                   : 'Specify your email to retrieve access keys.'}
