@@ -13,7 +13,7 @@ const Navbar: React.FC<NavbarProps> = ({ user, onLogout, setView, currentView })
   const isStudent = user.role === UserRole.STUDENT;
 
   return (
-    <nav className="sticky top-0 z-50 bg-white border-b border-slate-100 px-4 md:px-12 py-3 flex items-center justify-between shadow-sm">
+    <nav className="sticky top-0 z-50 bg-white border-b border-slate-100 px-4 md:px-12 py-3 flex items-center justify-between">
       <div 
         className="flex items-center gap-3 cursor-pointer group" 
         onClick={() => setView(isStudent ? 'home' : 'dashboard')}
@@ -33,12 +33,12 @@ const Navbar: React.FC<NavbarProps> = ({ user, onLogout, setView, currentView })
         </div>
       </div>
 
-      <div className="hidden lg:flex items-center gap-2">
+      <div className="hidden lg:flex items-center gap-4">
         <button 
           onClick={() => setView(isStudent ? 'home' : 'dashboard')}
-          className={`flex items-center gap-2 px-6 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${
+          className={`flex items-center gap-2 px-6 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${
             (isStudent && currentView === 'home') || (!isStudent && currentView === 'dashboard') 
-              ? 'bg-rose-50 text-[#3d0413]' 
+              ? 'bg-[#fdf2f2] text-[#3d0413]' 
               : 'text-slate-500 hover:text-slate-800'
           }`}
         >
@@ -46,22 +46,20 @@ const Navbar: React.FC<NavbarProps> = ({ user, onLogout, setView, currentView })
           Dashboard
         </button>
         
-        {!isStudent && (
-          <button 
-            onClick={() => setView('dashboard')}
-            className={`flex items-center gap-2 px-6 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${
-               currentView === 'dashboard' && !isStudent ? 'bg-rose-50 text-[#3d0413]' : 'text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <GraduationCap size={14} />
-            My Classes
-          </button>
-        )}
+        <button 
+          onClick={() => setView('dashboard')}
+          className={`flex items-center gap-2 px-6 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${
+              currentView === 'dashboard' ? 'bg-[#fdf2f2] text-[#3d0413]' : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <GraduationCap size={14} />
+          My Classes
+        </button>
 
         <button 
           onClick={() => setView('browse')}
-          className={`flex items-center gap-2 px-6 py-2.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${
-            currentView === 'browse' ? 'bg-rose-50 text-[#3d0413]' : 'text-slate-500 hover:text-slate-800'
+          className={`flex items-center gap-2 px-6 py-2.5 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${
+            currentView === 'browse' ? 'text-[#3d0413]' : 'text-slate-500 hover:text-slate-800'
           }`}
         >
           <Library size={14} />
@@ -70,7 +68,7 @@ const Navbar: React.FC<NavbarProps> = ({ user, onLogout, setView, currentView })
       </div>
 
       <div className="flex items-center gap-4">
-        <div className="text-right hidden sm:block pr-4 border-r border-slate-100">
+        <div className="text-right hidden sm:block pr-4">
           <p className="text-[10px] font-black text-slate-900 leading-none truncate max-w-[120px]">{user.name.toUpperCase()}</p>
           <p className="text-[8px] text-slate-400 uppercase font-black tracking-widest mt-1">{user.role}</p>
         </div>

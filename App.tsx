@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, UserRole, Resource, ResourceType } from './types';
-import { MOCK_RESOURCES, DEPARTMENTS } from './constants';
-import Navbar from './components/Navbar';
-import Sidebar from './components/Sidebar';
-import ResourceGrid from './components/ResourceGrid';
-import Hero from './components/Hero';
-import StaffDashboardHome from './components/Dashboard';
-import Login from './components/Login';
-import { BookOpen } from 'lucide-react';
+import { User, UserRole, Resource, ResourceType } from './types.ts';
+import { MOCK_RESOURCES, DEPARTMENTS } from './constants.ts';
+import Navbar from './components/Navbar.tsx';
+import Sidebar from './components/Sidebar.tsx';
+import ResourceGrid from './components/ResourceGrid.tsx';
+import Hero from './components/Hero.tsx';
+import StaffDashboardHome from './components/Dashboard.tsx';
+import Login from './components/Login.tsx';
+import StudentClasses from './components/StudentClasses.tsx';
+import { BookOpen, Search, X } from 'lucide-react';
 
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -16,16 +17,15 @@ const App: React.FC = () => {
   const [selectedDept, setSelectedDept] = useState<string | null>(null);
   const [selectedType, setSelectedType] = useState<ResourceType | 'ALL'>('ALL');
   const [view, setView] = useState<'home' | 'browse' | 'dashboard'>('home');
+  const [studentDashTab, setStudentDashTab] = useState<'PHYSICAL' | 'ONLINE'>('PHYSICAL');
 
   // Persistence of login
   useEffect(() => {
-    // Check persistent storage first, then transient session storage
     const savedUser = localStorage.getItem('poly_library_user') || sessionStorage.getItem('poly_library_user');
     
     if (savedUser) {
       const parsedUser = JSON.parse(savedUser);
       setUser(parsedUser);
-      // Ensure staff starts on dashboard
       if (parsedUser.role !== UserRole.STUDENT) {
         setView('dashboard');
       }
@@ -35,7 +35,8 @@ const App: React.FC = () => {
   const filteredResources = useMemo(() => {
     return resources.filter(res => {
       const matchesSearch = res.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                           res.unitCode.toLowerCase().includes(searchQuery.toLowerCase());
+                           res.unitCode.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                           res.description.toLowerCase().includes(searchQuery.toLowerCase());
       const matchesDept = !selectedDept || res.department === selectedDept;
       
       let matchesType = true;
@@ -59,7 +60,6 @@ const App: React.FC = () => {
       localStorage.removeItem('poly_library_user');
     }
 
-    // Staff always lands on Dashboard (their "Home")
     if (u.role !== UserRole.STUDENT) {
       setView('dashboard');
     } else {
@@ -74,11 +74,15 @@ const App: React.FC = () => {
     setView('home');
   };
 
+  const navigateToStudentDashboard = (tab: 'PHYSICAL' | 'ONLINE' = 'PHYSICAL') => {
+    setStudentDashTab(tab);
+    setView('dashboard');
+  };
+
   if (!user) {
     return <Login onLogin={handleLogin} />;
   }
 
-  // Staff "Home" and "Dashboard" are now the same view
   if (user.role !== UserRole.STUDENT && (view === 'dashboard' || view === 'home')) {
     return (
       <div className="min-h-screen bg-slate-50">
@@ -93,7 +97,10 @@ const App: React.FC = () => {
       <Navbar 
         user={user} 
         onLogout={handleLogout} 
-        setView={setView} 
+        setView={(v) => {
+          if (v === 'dashboard') navigateToStudentDashboard('PHYSICAL');
+          else setView(v);
+        }} 
         currentView={view} 
       />
       
@@ -108,7 +115,12 @@ const App: React.FC = () => {
         <div className={`flex-1 p-4 md:p-10 overflow-y-auto bg-slate-50/50 ${view === 'dashboard' ? 'max-w-screen-2xl mx-auto w-full' : ''}`}>
           {view === 'home' && (
             <>
-              <Hero onSearch={setSearchQuery} onBrowse={() => setView('browse')} />
+              <Hero 
+                user={user} 
+                onSearch={setSearchQuery} 
+                onBrowse={() => setView('browse')} 
+                onViewDashboard={() => navigateToStudentDashboard('PHYSICAL')}
+              />
               <div className="mt-16">
                 <div className="flex items-center justify-between mb-8">
                    <h2 className="text-3xl font-black text-slate-800 flex items-center gap-3">
@@ -148,6 +160,25 @@ const App: React.FC = () => {
                 ))}
               </div>
 
+              <div className="mb-12 relative group">
+                <input
+                  type="text"
+                  placeholder="Quick Search: Type unit code, title or description to filter catalog..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-14 pr-14 py-5 bg-white border border-slate-200 rounded-[2rem] text-sm font-bold shadow-sm outline-none focus:ring-4 focus:ring-[#3d0413]/5 transition-all"
+                />
+                <Search size={22} className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-[#3d0413] transition-colors" />
+                {searchQuery && (
+                  <button 
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-300 hover:text-rose-600 transition-colors"
+                  >
+                    <X size={20} />
+                  </button>
+                )}
+              </div>
+
               <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-12">
                 <div>
                   <h2 className="text-5xl font-black text-slate-900 tracking-tighter leading-none mb-4">
@@ -169,11 +200,7 @@ const App: React.FC = () => {
           )}
 
           {view === 'dashboard' && user.role === UserRole.STUDENT && (
-            <div className="py-20 text-center">
-               <BookOpen size={64} className="mx-auto text-[#3d0413] mb-6 opacity-20" />
-               <h2 className="text-2xl font-black uppercase tracking-widest">My Personal Library</h2>
-               <p className="text-slate-500 mt-2 font-bold">Coming Soon: Track your borrowed materials and bookmarked resources.</p>
-            </div>
+            <StudentClasses initialTab={studentDashTab} />
           )}
         </div>
       </main>
@@ -201,7 +228,7 @@ const App: React.FC = () => {
             <h4 className="font-black text-[10px] uppercase tracking-[0.4em] text-rose-600 mb-8">Library Portal</h4>
             <ul className="text-slate-400 text-xs space-y-4 font-bold uppercase tracking-widest">
               <li><button onClick={() => setView('browse')} className="hover:text-white transition">Repository</button></li>
-              <li><button onClick={() => setView('dashboard')} className="hover:text-white transition">My Workspace</button></li>
+              <li><button onClick={() => navigateToStudentDashboard('PHYSICAL')} className="hover:text-white transition">My Workspace</button></li>
               <li><a href="#" className="hover:text-white transition">Audit Logs</a></li>
               <li><a href="#" className="hover:text-white transition">Legal & IP</a></li>
             </ul>

@@ -1,16 +1,13 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { User, Resource, UserRole } from '../types';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { User, Resource } from '../types';
 import { 
-  Plus, Search, GraduationCap, Clock, ArrowLeft, 
-  ChevronRight, X, Database, ShieldCheck, Timer, Save, Mic, Video as VideoIcon,
-  MessageCircle, SendHorizonal, MapPin, ClipboardCheck, Calendar as CalendarIcon, 
-  CheckCircle2, XCircle, Users, Globe, MonitorPlay, Sparkles, ExternalLink, Volume2, 
-  FileCheck, AlertCircle, Trash2, RefreshCw, LayoutDashboard, BarChart3, 
-  Settings, Layers, Briefcase, Zap, ShieldAlert, Fingerprint, PlusCircle, UserPlus, History, UserCheck, User as UserIcon,
-  Loader2, Edit3, Trash, ChevronUp, ChevronDown, CalendarSearch, School, CalendarDays, ChevronLeft, FileText, SearchCode,
-  HardDrive, History as HistoryIcon, Download, Eye
+  Plus, ArrowLeft, X, ShieldCheck, Save, Video as VideoIcon,
+  CheckCircle2, Users, MonitorPlay, Sparkles, 
+  Search, Edit3, UserPlus, Presentation, FileCode, School,
+  Mic, MicOff, VideoOff, MonitorUp, MessageSquare, Hand, Radio, Phone,
+  UserCheck, Send, Activity, FileDown, PhoneCall, Check,
+  UserCheck2, UserX2, Filter, RotateCcw, Info, Printer, Lock, History, FileText, CloudUpload, Mail, BarChart3, ArrowRight, ExternalLink, Monitor, Zap, Globe, Layers, BookOpen, Clock, Trash2, CalendarPlus, TrendingUp, AlertTriangle, Briefcase, Calendar, Power, DoorOpen
 } from 'lucide-react';
-import { researchWithGrounding } from '../geminiService';
 import html2canvas from 'html2canvas';
 import { jsPDF } from 'jspdf';
 
@@ -19,8 +16,41 @@ interface DashboardProps {
   resources: Resource[];
 }
 
-type SystemView = 'HOME' | 'PHYSICAL_CLASSES_OVERVIEW' | 'PHYSICAL_CLASS_DETAIL' | 'ONLINE_CLASSES' | 'ONLINE_CLASS_DETAIL' | 'SCHOOL_CALENDAR' | 'GLOBAL_STUDENT_ROSTER' | 'STUDENT_HISTORY' | 'HISTORICAL_ATTENDANCE';
-type SubPortalView = 'COMMAND' | 'ATTENDANCE' | 'TIMETABLE' | 'STUDENTS' | 'RESOURCES' | 'ASSESSMENT' | 'REPORTS';
+type SystemView = 'HOME' | 'PHYSICAL_CLASS_DETAIL' | 'ONLINE_CLASS_DETAIL';
+type ClassTab = 'REGISTER' | 'TIME TABLE' | 'STUDENTS' | 'MATERIALS';
+type MaterialCategory = 'LECTURE_NOTES' | 'LAB_MANUALS' | 'PAST_PAPERS';
+
+interface LectureNote {
+  id: string;
+  title: string;
+  fileName: string;
+  size: string;
+  uploadedDate: string;
+  downloads: number;
+  format: 'PDF' | 'PPT' | 'DOC';
+  week: number;
+  category: MaterialCategory;
+  tags: string[];
+}
+
+interface ScheduleSession {
+  id: string;
+  day: string;
+  time: string;
+  venue: string;
+  type: 'LECTURE' | 'PRACTICAL' | 'SEMINAR';
+}
+
+interface Student {
+  id: string;
+  name: string;
+  admNo: string;
+  phone: string;
+  attendance: number;
+  gradeAverage: number;
+  status: 'ACTIVE' | 'PROBATION' | 'DEFERRED';
+  classId?: string;
+}
 
 interface PhysicalClass {
   id: string;
@@ -28,1445 +58,940 @@ interface PhysicalClass {
   title: string;
   room: string;
   studentCount: number;
-  nextSession: string;
+  type: 'PHYSICAL';
+  department: string;
+  credits: number;
+  staff: string;
+  schedule: ScheduleSession[];
 }
 
-interface StudentNode {
+interface VirtualClass {
   id: string;
-  name: string;
-  admNo: string;
-  phone: string;
-  history: string;
+  code: string;
+  title: string;
+  platform: string;
+  students: number;
+  link: string;
+  type: 'ONLINE';
+  startTime: string;
 }
 
-interface TimetableSlot {
-  id: string;
-  time: string;
-  className: string;
-  room: string;
-  classId?: string; // Track which physical class this belongs to
-}
-
-interface DaySchedule {
-  date: string;
-  slots: TimetableSlot[];
-}
-
-interface AcademicSchedule {
-  openingDate: string;
-  closingDate: string;
-  term: '1' | '2' | '3' | null;
-}
-
-interface HistoricalRegisterSummary {
-  id: string;
-  date: Date;
-  classTitle: string;
-  classCode: string;
-  room: string;
-  present: number;
-  total: number;
-  syncStatus: 'SUCCESS' | 'PENDING';
-}
+const STORAGE_KEYS = {
+  PHYSICAL: 'staff_physical_classes_v1',
+  VIRTUAL: 'staff_virtual_classes_v1',
+  STUDENT_REGISTRY: 'poly_institutional_registry',
+  ENROLLED_STUDENTS: 'poly_enrolled_students'
+};
 
 const StaffDashboardHome: React.FC<DashboardProps> = ({ user, resources }) => {
   const [currentView, setCurrentView] = useState<SystemView>('HOME');
-  const [subPortal, setSubPortal] = useState<SubPortalView>('COMMAND');
+  const [activeClassTab, setActiveClassTab] = useState<ClassTab>('REGISTER');
+  const [activeMaterialCategory, setActiveMaterialCategory] = useState<MaterialCategory | null>(null);
   const [selectedPhysicalClass, setSelectedPhysicalClass] = useState<PhysicalClass | null>(null);
-  const [selectedStudentForHistory, setSelectedStudentForHistory] = useState<StudentNode | null>(null);
-  const [selectedHistoricalDate, setSelectedHistoricalDate] = useState<Date | null>(null);
+  const [selectedOnlineClass, setSelectedOnlineClass] = useState<VirtualClass | null>(null);
   
-  const [currentTime, setCurrentTime] = useState(new Date());
-  const [isAiPanelOpen, setIsAiPanelOpen] = useState(false);
-  const [aiQuery, setAiQuery] = useState('');
-  const [aiResponse, setAiResponse] = useState<{text: string, sources: any[]} | null>(null);
-  const [isAiLoading, setIsAiLoading] = useState(false);
-  const [isCameraActive, setIsCameraActive] = useState(false);
-  const streamRef = useRef<MediaStream | null>(null);
-  const [selectedOnlineClass, setSelectedOnlineClass] = useState<any | null>(null);
-  const [isExportingPdf, setIsExportingPdf] = useState(false);
-  const [returnToModal, setReturnToModal] = useState(false);
-  const [isFromStorage, setIsFromStorage] = useState(false);
+  const [notification, setNotification] = useState<{msg: string, type: 'success' | 'info'} | null>(null);
+  const [ledgerSearch, setLedgerSearch] = useState('');
+  const [materialsSearch, setMaterialsSearch] = useState('');
+  
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const pdfPrintRef = useRef<HTMLDivElement>(null);
+  const classFormRef = useRef<HTMLFormElement>(null);
 
-  const historicalPortalRef = useRef<HTMLDivElement>(null);
+  const [isMicOn, setIsMicOn] = useState(false);
+  const [isCamOn, setIsCamOn] = useState(false);
+  const [mediaStream, setMediaStream] = useState<MediaStream | null>(null);
 
-  // Academic Schedule State
-  const [academicSchedule, setAcademicSchedule] = useState<AcademicSchedule>({
-    openingDate: '2024-05-06',
-    closingDate: '2024-07-26',
-    term: '2'
-  });
-  const [isOpeningModalOpen, setIsOpeningModalOpen] = useState(false);
-  const [isClosingModalOpen, setIsClosingModalOpen] = useState(false);
-  const [isAddClassModalOpen, setIsAddClassModalOpen] = useState(false);
-
-  // Physical Classes State
-  const [myPhysicalClasses, setMyPhysicalClasses] = useState<PhysicalClass[]>([
-    { id: 'pc1', code: 'EE-402', title: 'POWER SYSTEMS II', room: 'Power Lab 2', studentCount: 42, nextSession: 'Tomorrow, 08:00 AM' },
-    { id: 'pc2', code: 'EE-305', title: 'CIRCUIT THEORY', room: 'Lecture Hall B', studentCount: 38, nextSession: 'Today, 02:00 PM' },
-    { id: 'pc3', code: 'EE-201', title: 'DIGITAL ELECTRONICS', room: 'Micro Lab 4', studentCount: 45, nextSession: 'Fri, 10:00 AM' },
-  ]);
-
-  // Mock Historical Storage Data
-  const [historicalStorage, setHistoricalStorage] = useState<HistoricalRegisterSummary[]>([
-    { id: 'hist-1', date: new Date('2026-01-14'), classTitle: 'POWER SYSTEMS II', classCode: 'EE-402', room: 'Power Lab 2', present: 38, total: 42, syncStatus: 'SUCCESS' },
-    { id: 'hist-2', date: new Date('2026-01-13'), classTitle: 'CIRCUIT THEORY', classCode: 'EE-305', room: 'Lecture Hall B', present: 36, total: 38, syncStatus: 'SUCCESS' },
-    { id: 'hist-3', date: new Date('2026-01-12'), classTitle: 'POWER SYSTEMS II', classCode: 'EE-402', room: 'Power Lab 2', present: 40, total: 42, syncStatus: 'SUCCESS' },
-    { id: 'hist-4', date: new Date('2026-01-11'), classTitle: 'DIGITAL ELECTRONICS', classCode: 'EE-201', room: 'Micro Lab 4', present: 44, total: 45, syncStatus: 'SUCCESS' },
-    { id: 'hist-5', date: new Date('2026-01-10'), classTitle: 'CIRCUIT THEORY', classCode: 'EE-305', room: 'Lecture Hall B', present: 32, total: 38, syncStatus: 'SUCCESS' },
-    { id: 'hist-6', date: new Date('2026-01-09'), classTitle: 'POWER SYSTEMS II', classCode: 'EE-402', room: 'Power Lab 2', present: 38, total: 42, syncStatus: 'SUCCESS' },
-    { id: 'hist-7', date: new Date('2026-01-08'), classTitle: 'DIGITAL ELECTRONICS', classCode: 'EE-201', room: 'Micro Lab 4', present: 45, total: 45, syncStatus: 'SUCCESS' },
-  ]);
-
-  // Form state for new class
-  const [newClass, setNewClass] = useState({
-    title: '',
-    code: '',
-    room: '',
-    nextSession: ''
-  });
-
-  const handleAddClassSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newClass.title || !newClass.room) return;
-    
-    const classNode: PhysicalClass = {
-      id: Math.random().toString(36).substr(2, 9),
-      title: newClass.title.toUpperCase(),
-      code: newClass.code.toUpperCase() || 'EE-XXX',
-      room: newClass.room.toUpperCase(),
-      studentCount: 0,
-      nextSession: newClass.nextSession || 'TBA'
-    };
-    setMyPhysicalClasses([classNode, ...myPhysicalClasses]);
-    setIsAddClassModalOpen(false);
-    setNewClass({ title: '', code: '', room: '', nextSession: '' });
-  };
-
-  const getDayDate = (dayName: string) => {
-    const days = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
-    const targetIdx = days.indexOf(dayName);
-    const now = new Date();
-    const currentIdx = now.getDay();
-    const diff = targetIdx - currentIdx;
-    const targetDate = new Date(now);
-    targetDate.setDate(now.getDate() + diff);
-    return targetDate.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-  };
-
-  const daysOfWeek = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
-  const [activeDay, setActiveDay] = useState<string>(daysOfWeek[new Date().getDay()]);
-  const [isAddingSlot, setIsAddingSlot] = useState(false);
-  const [selectedHour, setSelectedHour] = useState('08');
-  const [selectedMinute, setSelectedMinute] = useState('00');
-  const [newSlotData, setNewSlotData] = useState({ className: '', room: '' });
-
-  const hours = Array.from({ length: 24 }, (_, i) => i.toString().padStart(2, '0'));
-  const minutes = Array.from({ length: 60 }, (_, i) => i.toString().padStart(2, '0'));
-
-  const [timetableData, setTimetableData] = useState<Record<string, DaySchedule>>({
-    "SUNDAY": { date: getDayDate("SUNDAY"), slots: [] },
-    "MONDAY": { date: getDayDate("MONDAY"), slots: [
-      { id: '1', time: "10:31", className: "Power Systems II", room: "Power Lab 2", classId: 'pc1' },
-      { id: '2', time: "11:15", className: "Science Lab", room: "Lab 3", classId: 'pc2' }
-    ]},
-    "TUESDAY": { date: getDayDate("TUESDAY"), slots: [
-      { id: '4', time: "09:10", className: "Circuit Theory", room: "Lecture Hall B", classId: 'pc2' }
-    ]},
-    "WEDNESDAY": { date: getDayDate("WEDNESDAY"), slots: [
-        { id: '5', time: "14:00", className: "Power Systems II", room: "Power Lab 2", classId: 'pc1' }
-    ]},
-    "THURSDAY": { date: getDayDate("THURSDAY"), slots: [
-        { id: '6', time: "08:30", className: "Digital Electronics", room: "Micro Lab 4", classId: 'pc3' }
-    ]},
-    "FRIDAY": { date: getDayDate("FRIDAY"), slots: [
-        { id: '7', time: "10:00", className: "Power Systems II", room: "Power Lab 2", classId: 'pc1' }
-    ]},
-    "SATURDAY": { date: getDayDate("SATURDAY"), slots: [] }
-  });
-
-  const [viewDate, setViewDate] = useState(new Date());
-
-  const handleAddSlot = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newSlotData.className || !newSlotData.room) return;
-    
-    const time = `${selectedHour}:${selectedMinute}`;
-    const slot: TimetableSlot = {
-      id: Math.random().toString(36).substr(2, 9),
-      time,
-      ...newSlotData,
-      classId: selectedPhysicalClass?.id // Synchronize with current portal context
-    };
-
-    setTimetableData(prev => ({
-      ...prev,
-      [activeDay]: { 
-        ...prev[activeDay], 
-        slots: [...(prev[activeDay]?.slots || []), slot].sort((a, b) => a.time.localeCompare(b.time)) 
+  // Persistence Logic for Staff Dashboard
+  const [physicalClasses, setPhysicalClasses] = useState<PhysicalClass[]>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.PHYSICAL);
+    return saved ? JSON.parse(saved) : [
+      { 
+        id: 'pc1', code: 'EE-402', title: 'POWER SYSTEMS II', room: 'POWER LAB 2', studentCount: 42, type: 'PHYSICAL' as const, department: 'ELECTRICAL ENGINEERING', credits: 3, staff: user.name,
+        schedule: [
+          { id: 's1', day: 'MONDAY', time: '08:00 AM - 11:00 AM', venue: 'POWER LAB 2', type: 'PRACTICAL' },
+          { id: 's2', day: 'WEDNESDAY', time: '02:00 PM - 04:00 PM', venue: 'LT-04', type: 'LECTURE' },
+        ],
       }
-    }));
+    ];
+  });
 
-    setNewSlotData({ className: '', room: '' });
-    setIsAddingSlot(false);
-  };
+  const [virtualClasses, setVirtualClasses] = useState<VirtualClass[]>(() => {
+    const saved = localStorage.getItem(STORAGE_KEYS.VIRTUAL);
+    return saved ? JSON.parse(saved) : [
+      { id: 'v1', code: 'ICT-101', title: 'PROGRAMMING LOGIC', platform: 'MICROSOFT TEAMS', students: 42, link: 'https://teams.microsoft.com', type: 'ONLINE' as const, startTime: '10:00 AM' }
+    ];
+  });
 
-  const handleDeleteSlot = (day: string, slotId: string) => {
-    setTimetableData(prev => ({
-      ...prev,
-      [day]: {
-        ...prev[day],
-        slots: prev[day].slots.filter(s => s.id !== slotId)
-      }
-    }));
-  };
+  // Load students from Registry + Defaults
+  const [students, setStudents] = useState<Student[]>(() => {
+    const defaultStudents: Student[] = [
+      { id: 'st1', name: 'BENJAMIN KIPROP', admNo: 'EE/001/2024', phone: '+254 711 000 001', attendance: 98, gradeAverage: 74, status: 'ACTIVE' },
+      { id: 'st2', name: 'CYNTHIA ANYANGO', admNo: 'EE/042/2024', phone: '+254 711 000 002', attendance: 82, gradeAverage: 68, status: 'ACTIVE' },
+      { id: 'st3', name: 'DOUGLAS MWANGI', admNo: 'EE/105/2024', phone: '+254 711 000 003', attendance: 45, gradeAverage: 52, status: 'PROBATION' },
+    ];
+    const saved = localStorage.getItem(STORAGE_KEYS.ENROLLED_STUDENTS);
+    const joinedStudents: Student[] = saved ? JSON.parse(saved) : [];
+    return [...defaultStudents, ...joinedStudents];
+  });
 
-  const [isAddingStudent, setIsAddingStudent] = useState(false);
-  const [newStudent, setNewStudent] = useState({ name: '', admNo: '', phone: '' });
-  const [focusedStudent, setFocusedStudent] = useState<StudentNode | null>(null);
-  const [students, setStudents] = useState<StudentNode[]>([
-    { id: '1', name: 'Kiprono Kemboi', admNo: '2024/EE/001', phone: '0712345678', history: '98% Att.' },
-    { id: '2', name: 'Mary Wambui', admNo: '2024/EE/014', phone: '0722334455', history: '62% Att.' },
-    { id: '3', name: 'Peter Otieno', admNo: '2024/EE/018', phone: '0733445566', history: '91% Att.' },
-    { id: '4', name: 'Sarah Jepchirchir', admNo: '2024/EE/022', phone: '0744556677', history: '78% Att.' },
-  ]);
-
-  const handleDeleteStudent = (id: string) => {
-    setStudents(prev => prev.filter(s => s.id !== id));
-  };
-
-  const [attendanceState, setAttendanceState] = useState<Record<string, 'present' | 'absent'>>({});
-  const [isSavingAttendance, setIsSavingAttendance] = useState(false);
-  const [saveStatus, setSaveStatus] = useState<'idle' | 'success'>('idle');
-
-  const markAttendance = (id: string, status: 'present' | 'absent') => {
-    // Permanent highlight logic: If already marked present, do not allow changes.
-    if (attendanceState[id] === 'present') return;
-    
-    setAttendanceState(prev => ({ ...prev, [id]: status }));
-    setSaveStatus('idle');
-  };
-
-  const markAllPresent = () => {
-    const newState = { ...attendanceState };
-    students.forEach(s => newState[s.id] = 'present');
-    setAttendanceState(newState);
-  };
-
-  const handleSaveAttendance = async () => {
-    if (!selectedPhysicalClass) return;
-
-    setIsSavingAttendance(true);
-    // Institutional node simulation delay
-    await new Promise(r => setTimeout(r, 1500));
-    
-    // CAPTURE CURRENT REGISTRY STATE
-    const presentCount = Object.values(attendanceState).filter(s => s === 'present').length;
-    const newArchiveEntry: HistoricalRegisterSummary = {
-      id: `hist-${Date.now()}`,
-      date: new Date(),
-      classTitle: selectedPhysicalClass.title,
-      classCode: selectedPhysicalClass.code,
-      room: selectedPhysicalClass.room,
-      present: presentCount,
-      total: students.length,
-      syncStatus: 'SUCCESS'
-    };
-
-    // ARCHIVE AUTOMATICALLY INTO STORAGE STATE
-    setHistoricalStorage(prev => [newArchiveEntry, ...prev]);
-    
-    setIsSavingAttendance(false);
-    setSaveStatus('success');
-    
-    // Cleanup feedback UI
-    setTimeout(() => setSaveStatus('idle'), 3000);
-  };
+  // Sync to LocalStorage whenever state changes
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.PHYSICAL, JSON.stringify(physicalClasses));
+  }, [physicalClasses]);
 
   useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, []);
+    localStorage.setItem(STORAGE_KEYS.VIRTUAL, JSON.stringify(virtualClasses));
+  }, [virtualClasses]);
 
-  const toggleCamera = async () => {
-    if (isCameraActive) {
-      if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
-      setIsCameraActive(false);
+  // Calendar Governance States
+  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
+  const [calendarAction, setCalendarAction] = useState<'OPENING' | 'CLOSING'>('OPENING');
+  const [academicConfig, setAcademicConfig] = useState({
+    term: 1,
+    openingDate: '2026-05-01',
+    closingDate: '2026-08-15',
+    status: 'ACTIVE' as 'ACTIVE' | 'BREAK'
+  });
+
+  const [attendanceLog, setAttendanceLog] = useState<Record<string, 'PRESENT' | 'ABSENT'>>({});
+  const [isCreateClassModalOpen, setIsCreateClassModalOpen] = useState(false);
+  const [editingNode, setEditingNode] = useState<PhysicalClass | VirtualClass | null>(null);
+  const [provisionType, setProvisionType] = useState<'PHYSICAL' | 'ONLINE'>('PHYSICAL');
+  const [isAddStudentModalOpen, setIsAddStudentModalOpen] = useState(false);
+  
+  const [messagingStudent, setMessagingStudent] = useState<Student | null>(null);
+  const [analyticsStudent, setAnalyticsStudent] = useState<Student | null>(null);
+  const [historyStudent, setHistoryStudent] = useState<Student | null>(null);
+  const [isSessionModalOpen, setIsSessionModalOpen] = useState(false);
+  const [editingSession, setEditingSession] = useState<ScheduleSession | null>(null);
+
+  const [lectureNotes] = useState<LectureNote[]>([
+    { id: 'n1', title: 'TRANSMISSION LINE MODELLING', fileName: 'EE402_WK1_TRANSMISSION.PDF', size: '4.8 MB', uploadedDate: 'FEB 1, 2026', downloads: 124, format: 'PDF', week: 1, category: 'LECTURE_NOTES', tags: ['Core'] },
+    { id: 'n2', title: 'LAB MANUAL: FAULT ANALYSIS', fileName: 'LAB_EE402_P1.PDF', size: '12.4 MB', uploadedDate: 'FEB 5, 2026', downloads: 215, format: 'PDF', week: 1, category: 'LAB_MANUALS', tags: ['Mandatory'] },
+    { id: 'n3', title: 'POWER PROTECTION SYSTEMS 2023', fileName: 'EXAM_EE402_S1_2023.PDF', size: '2.1 MB', uploadedDate: 'DEC 12, 2025', downloads: 89, format: 'PDF', week: 14, category: 'PAST_PAPERS', tags: ['Exam'] },
+  ]);
+
+  const showToast = (msg: string, type: 'success' | 'info' = 'success') => {
+    setNotification({ msg, type });
+    setTimeout(() => setNotification(null), 4000);
+  };
+
+  const setStudentStatus = (id: string, status: 'PRESENT' | 'ABSENT') => {
+    setAttendanceLog(prev => ({ ...prev, [id]: status }));
+  };
+
+  const syncToGlobalRegistry = (node: PhysicalClass | VirtualClass, isRemoval: boolean = false) => {
+    const currentRegistryStr = localStorage.getItem(STORAGE_KEYS.STUDENT_REGISTRY) || '[]';
+    let currentRegistry = JSON.parse(currentRegistryStr);
+    
+    if (isRemoval) {
+      currentRegistry = currentRegistry.filter((r: any) => r.id !== node.id);
+    } else {
+      const existingIdx = currentRegistry.findIndex((r: any) => r.id === node.id);
+      const registryItem = {
+        id: node.id,
+        title: `${node.code}: ${node.title}`,
+        teacher: user.name,
+        room: node.type === 'PHYSICAL' ? (node as PhysicalClass).room : (node as VirtualClass).platform,
+        schedule: node.type === 'PHYSICAL' ? 'In-person node' : 'Virtual session',
+        type: node.type,
+        studentCount: (node as any).studentCount || 0,
+        department: user.department || 'General Academic Dept',
+        platform: node.type === 'ONLINE' ? (node as VirtualClass).platform : undefined
+      };
+
+      if (existingIdx > -1) {
+        currentRegistry[existingIdx] = registryItem;
+      } else {
+        currentRegistry.push(registryItem);
+      }
+    }
+    
+    localStorage.setItem(STORAGE_KEYS.STUDENT_REGISTRY, JSON.stringify(currentRegistry));
+  };
+
+  const handleDeleteNode = (e: React.MouseEvent, id: string, type: 'PHYSICAL' | 'ONLINE') => {
+    e.stopPropagation();
+    if (!window.confirm("Are you sure you want to terminate this academic node? This action is irreversible.")) return;
+    
+    if (type === 'PHYSICAL') {
+      const nodeToRemove = physicalClasses.find(c => c.id === id);
+      if (nodeToRemove) syncToGlobalRegistry(nodeToRemove, true);
+      setPhysicalClasses(prev => prev.filter(c => c.id !== id));
+    } else {
+      const nodeToRemove = virtualClasses.find(c => c.id === id);
+      if (nodeToRemove) syncToGlobalRegistry(nodeToRemove, true);
+      setVirtualClasses(prev => prev.filter(c => c.id !== id));
+    }
+    showToast("Academic Node Terminated", "info");
+  };
+
+  const handleOpenEdit = (e: React.MouseEvent, node: PhysicalClass | VirtualClass) => {
+    e.stopPropagation();
+    setEditingNode(node);
+    setProvisionType(node.type);
+    setIsCreateClassModalOpen(true);
+  };
+
+  const handleDeleteSession = (sessionId: string) => {
+    if (!selectedPhysicalClass) return;
+    if (!window.confirm("Delete this session from the time table?")) return;
+
+    const updatedSchedule = selectedPhysicalClass.schedule.filter(s => s.id !== sessionId);
+    const updatedClass = { ...selectedPhysicalClass, schedule: updatedSchedule };
+    
+    setPhysicalClasses(prev => prev.map(c => c.id === selectedPhysicalClass.id ? updatedClass : c));
+    setSelectedPhysicalClass(updatedClass);
+    showToast("Session Removed", "info");
+  };
+
+  const handleOpenSessionModal = (session?: ScheduleSession) => {
+    setEditingSession(session || null);
+    setIsSessionModalOpen(true);
+  };
+
+  const handleToggleMic = () => {
+    setIsMicOn(!isMicOn);
+    showToast(!isMicOn ? "Microphone Authorized" : "Microphone Muted", "info");
+  };
+
+  const handleToggleVideo = async () => {
+    if (isCamOn) {
+      if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+      setMediaStream(null);
+      setIsCamOn(false);
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        streamRef.current = stream;
-        setIsCameraActive(true);
-      } catch (err) { console.error(err); }
+        if (videoRef.current) videoRef.current.srcObject = stream;
+        setMediaStream(stream);
+        setIsCamOn(true);
+      } catch (err) { showToast("Visual Input Denied", "info"); }
     }
   };
 
-  const videoRefCallback = useCallback((node: HTMLVideoElement | null) => {
-    if (node && isCameraActive && streamRef.current) {
-      node.srcObject = streamRef.current;
-      node.play().catch(console.error);
-    }
-  }, [isCameraActive]);
-
-  const handleAiResearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!aiQuery.trim()) return;
-    setIsAiLoading(true);
+  const handleExportPDF = async () => {
+    if (!pdfPrintRef.current) return;
+    showToast("Generating Academic Document...", "info");
     try {
-      const result = await researchWithGrounding(aiQuery);
-      setAiResponse(result);
-    } catch (err) { console.error(err); }
-    finally { setIsAiLoading(false); }
-  };
-
-  const handleAddStudent = (e: React.FormEvent) => {
-    e.preventDefault();
-    const student: StudentNode = {
-      id: Math.random().toString(36).substr(2, 9),
-      name: newStudent.name,
-      admNo: newStudent.admNo,
-      phone: newStudent.phone || 'N/A',
-      history: '100% Att.'
-    };
-    setStudents([student, ...students]);
-    setNewStudent({ name: '', admNo: '', phone: '' });
-    setIsAddingStudent(false);
-  };
-
-  const getGraphData = () => {
-    if (focusedStudent) {
-      const baseValue = parseInt(focusedStudent.history) || 0;
-      return [baseValue - 5, baseValue + 2, baseValue - 10, baseValue, baseValue + 3, baseValue - 2, baseValue];
-    }
-    return [65, 82, 45, 90, 78, 62, 85];
-  };
-
-  const handleExportPdf = async () => {
-    if (!historicalPortalRef.current || isExportingPdf) return;
-    
-    setIsExportingPdf(true);
-    try {
-      const element = historicalPortalRef.current;
-      const canvas = await html2canvas(element, {
-        scale: 2, // High resolution
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#f8fafc' // Matches background
-      });
-      
+      pdfPrintRef.current.style.display = 'block';
+      const canvas = await html2canvas(pdfPrintRef.current, { scale: 2, useCORS: true });
+      pdfPrintRef.current.style.display = 'none';
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF('p', 'mm', 'a4');
-      const imgProps = pdf.getImageProperties(imgData);
       const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-      
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
       pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`TKNP_Attendance_Audit_${selectedHistoricalDate?.toISOString().split('T')[0]}.pdf`);
-    } catch (error) {
-      console.error('PDF Export Error:', error);
-    } finally {
-      setIsExportingPdf(false);
-    }
+      pdf.save(`TKNP_Attendance_${selectedPhysicalClass?.code}.pdf`);
+      showToast("Official Document Dispatched", "success");
+    } catch (err) { showToast("PDF Sync Failure", "info"); }
   };
 
-  const StudentAddForm = (
-    <div className="w-full bg-white border-2 border-[#3d0413]/10 p-8 rounded-[2.5rem] shadow-2xl animate-in slide-in-from-top-4 duration-500 flex flex-col gap-6 relative overflow-hidden mb-12">
-       <div className="absolute top-0 right-0 w-24 h-24 bg-rose-50 rounded-full blur-3xl -mr-12 -mt-12"></div>
-       <div className="flex items-center justify-between relative z-10">
-          <h4 className="text-xl font-black text-slate-900 uppercase tracking-tight">INITIALIZE NEW STUDENT NODE</h4>
-          <button onClick={() => setIsAddingStudent(false)} className="text-slate-300 hover:text-rose-950 transition-colors"><X size={24}/></button>
-       </div>
-       <form onSubmit={handleAddStudent} className="grid grid-cols-1 md:grid-cols-3 gap-4 relative z-10">
-          <div className="space-y-1"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">FULL NAME</label><input type="text" placeholder="E.G. JANE DOE" value={newStudent.name} required onChange={e => setNewStudent({...newStudent, name: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-[11px] font-black uppercase focus:ring-4 focus:ring-[#3d0413]/5 focus:border-[#3d0413] transition-all" /></div>
-          <div className="space-y-1"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">ADM NUMBER</label><input type="text" placeholder="2026/EE/0XXX" value={newStudent.admNo} required onChange={e => setNewStudent({...newStudent, admNo: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-[11px] font-black uppercase focus:ring-4 focus:ring-[#3d0413]/5 focus:border-[#3d0413] transition-all" /></div>
-          <div className="space-y-1"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">CONTACT NODE</label><input type="text" placeholder="07XX XXX XXX" value={newStudent.phone} onChange={e => setNewStudent({...newStudent, phone: e.target.value})} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none text-[11px] font-black uppercase focus:ring-4 focus:ring-[#3d0413]/5 focus:border-[#3d0413] transition-all" /></div>
-          <div className="md:col-span-3 pt-2"><button type="submit" className="w-full py-5 bg-[#3d0413] text-white rounded-2xl font-black uppercase text-[11px] tracking-[0.3em] shadow-2xl hover:bg-black transition-all flex items-center justify-center gap-3"><CheckCircle2 size={18}/> REGISTER TO REGISTRY</button></div>
-       </form>
-    </div>
-  );
+  // Filter students based on current selected class
+  const classStudents = useMemo(() => {
+    const currentId = selectedPhysicalClass?.id || selectedOnlineClass?.id;
+    if (!currentId) return students;
+    return students.filter(s => !s.classId || s.classId === currentId);
+  }, [students, selectedPhysicalClass, selectedOnlineClass]);
 
-  const HomeView = (
-    <div className="max-w-7xl mx-auto space-y-12 py-12 px-6 animate-in fade-in duration-700">
-      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-        <div className="flex items-center gap-6">
-          <div className="w-14 h-14 bg-white border-2 border-slate-100 rounded-2xl flex items-center justify-center text-[#3d0413] shadow-sm"><ShieldCheck size={28} /></div>
+  const filteredStudents = useMemo(() => {
+    return classStudents.filter(s => 
+      s.name.toLowerCase().includes(ledgerSearch.toLowerCase()) || 
+      s.admNo.toLowerCase().includes(ledgerSearch.toLowerCase())
+    );
+  }, [classStudents, ledgerSearch]);
+
+  const filteredMaterials = useMemo(() => {
+    return lectureNotes.filter(note => {
+      const query = materialsSearch.toLowerCase().trim();
+      const matchesSearch = query === '' || 
+                           note.title.toLowerCase().includes(query) || 
+                           note.fileName.toLowerCase().includes(query) ||
+                           note.tags.some(tag => tag.toLowerCase().includes(query));
+      
+      if (activeMaterialCategory) {
+        return note.category === activeMaterialCategory && matchesSearch;
+      }
+      return matchesSearch;
+    });
+  }, [lectureNotes, activeMaterialCategory, materialsSearch]);
+
+  const renderRegister = () => (
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-6 duration-700">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+        <div className="bg-emerald-50 border border-emerald-100 p-8 rounded-[2.5rem] flex items-center justify-between shadow-sm">
+          <div><p className="text-[10px] font-black text-emerald-800 uppercase tracking-widest mb-1">Present Today</p>
+          <p className="text-4xl font-black text-emerald-900">{Object.values(attendanceLog).filter(v => v === 'PRESENT').length}</p></div>
+          <div className="w-14 h-14 bg-white/50 rounded-2xl flex items-center justify-center text-emerald-600 shadow-sm"><UserCheck size={24} /></div>
+        </div>
+        <div className="bg-rose-50 border border-rose-100 p-8 rounded-[2.5rem] flex items-center justify-between shadow-sm">
+          <div><p className="text-[10px] font-black text-rose-800 uppercase tracking-widest mb-1">Absent Today</p>
+          <p className="text-4xl font-black text-rose-900">{Object.values(attendanceLog).filter(v => v === 'ABSENT').length}</p></div>
+          <div className="w-14 h-14 bg-white/50 rounded-2xl flex items-center justify-center text-rose-600 shadow-sm"><X size={24} /></div>
+        </div>
+        <div className="bg-slate-50 border border-slate-100 p-8 rounded-[2.5rem] flex items-center justify-between shadow-sm">
+          <div><p className="text-[10px] font-black text-slate-800 uppercase tracking-widest mb-1">Class Size</p>
+          <p className="text-4xl font-black text-slate-900">{classStudents.length}</p></div>
+          <div className="w-14 h-14 bg-white/50 rounded-2xl flex items-center justify-center text-slate-600 shadow-sm"><Users size={24} /></div>
+        </div>
+        <div className="bg-[#3d0413] p-8 rounded-[2.5rem] flex items-center justify-between shadow-xl border-b-4 border-black">
+          <div><p className="text-[10px] font-black text-rose-300 uppercase tracking-widest mb-1">Completion</p>
+          <p className="text-4xl font-black text-white">{Math.round((Object.keys(attendanceLog).length / (classStudents.length || 1)) * 100) || 0}%</p></div>
+          <div className="w-14 h-14 bg-white/10 rounded-2xl flex items-center justify-center text-white"><Activity size={24} /></div>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-[3.5rem] border border-slate-100 shadow-2xl overflow-hidden">
+        <div className="p-10 border-b border-slate-50 flex items-center justify-between flex-wrap gap-4 bg-slate-50/20">
           <div>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.3em]">COMMAND TERMINAL / V5.0.2</p>
-            <h1 className="text-5xl font-black text-[#1a202c] uppercase tracking-tight">INSTITUTIONAL PORTAL</h1>
-            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-2">WELCOME BACK, <span className="text-[#3d0413]">{user.name.toUpperCase()}</span> • {user.department || 'ELECTRICAL ENGINEERING'}</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 bg-white/50 border border-slate-200 p-2 rounded-full shadow-sm pr-6">
-            <div className="w-12 h-12 bg-[#3d0413] rounded-full flex items-center justify-center text-white font-black text-xl shadow-lg">{currentTime.getHours().toString().padStart(2, '0')}</div>
-            <div className="text-slate-300 font-bold text-lg mx-1">:</div>
-            <div className="w-12 h-12 bg-[#3d0413] rounded-full flex items-center justify-center text-white font-black text-xl shadow-lg">{currentTime.getMinutes().toString().padStart(2, '0')}</div>
-          </div>
-        </div>
-      </header>
-      <div className="flex flex-col lg:flex-row gap-10">
-        <div className="flex-1 bg-[#3d0413] rounded-[3rem] p-12 text-white relative overflow-hidden shadow-2xl">
-          <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-white/5 rounded-full blur-[80px] -mr-32 -mt-32 pointer-events-none"></div>
-          <div className="relative z-10">
-            <div className="flex items-center justify-between mb-16">
-              <div className="flex items-center gap-4">
-                <div className="w-14 h-14 bg-white/10 backdrop-blur-md rounded-2xl border border-white/20 flex items-center justify-center"><Database size={28} className="text-rose-300" /></div>
-                <div className="px-5 py-2 bg-rose-500/10 border border-rose-500/30 rounded-full"><span className="text-[9px] font-black tracking-[0.2em] uppercase text-rose-200">OFFICIAL ACADEMIC REGISTRY</span></div>
-              </div>
-              <button onClick={() => setIsAiPanelOpen(true)} className="flex items-center gap-2 px-6 py-3 bg-white/10 hover:bg-white/20 rounded-2xl text-[10px] font-black uppercase tracking-widest border border-white/10 transition-all active:scale-95"><Sparkles size={16} /> AI Librarian</button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-              <div className="border-2 border-white/40 p-8 rounded-[2rem] flex flex-col justify-between group cursor-pointer hover:border-white transition-all hover:bg-white/5" onClick={() => setCurrentView('PHYSICAL_CLASSES_OVERVIEW')}>
-                <div><h3 className="text-2xl font-black uppercase tracking-tight">MY PHYSICAL CLASSES</h3><p className="text-white/40 text-[9px] font-bold uppercase tracking-widest mt-2">Enterprise Management System v5.0</p></div>
-                <button className="w-full py-5 bg-white text-[#3d0413] rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] shadow-xl group-hover:bg-rose-50 transition-all flex items-center justify-between px-8 mt-10">MANAGE OVERVIEW <ChevronRight size={18} /></button>
-              </div>
-              <div className="border-2 border-white/40 p-8 rounded-[2rem] flex flex-col justify-between group cursor-pointer hover:border-white transition-colors" onClick={() => { setCurrentView('PHYSICAL_CLASSES_OVERVIEW'); setIsAddClassModalOpen(true); }}>
-                <h3 className="text-2xl font-black uppercase tracking-tight">ADD PHYSICAL CLASS</h3>
-                <button className="w-full py-5 bg-white text-[#3d0413] rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] shadow-xl hover:bg-rose-50 transition-all px-8 mt-10">INITIALIZE SESSION</button>
-              </div>
-              <div className="border-2 border-white/40 p-8 rounded-[2rem] flex flex-col justify-between group cursor-pointer hover:border-white transition-colors" onClick={() => setCurrentView('ONLINE_CLASSES')}>
-                <h3 className="text-2xl font-black uppercase tracking-tight">MY ONLINE HUB</h3>
-                <button className="w-full py-5 bg-transparent border-2 border-white/40 text-white rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] transition-all flex items-center justify-between px-8 mt-10 hover:bg-white/5">LAUNCH VIRTUAL LAB <MonitorPlay size={18} /></button>
-              </div>
-              <div className="border-2 border-white/40 p-8 rounded-[2rem] flex flex-col justify-between group hover:border-white transition-colors">
-                <h3 className="text-2xl font-black uppercase tracking-tight">ADD ONLINE HUB</h3>
-                <button className="w-full py-5 bg-transparent border-2 border-white/40 text-white rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] transition-all flex items-center justify-between px-8 mt-10 hover:bg-white/5">CONNECT EXTERNAL NODE</button>
-              </div>
+            <h3 className="text-2xl font-black text-slate-900 uppercase tracking-tight">Class Attendance</h3>
+            <div className="mt-4 relative w-64">
+              <input type="text" placeholder="Filter Ledger..." value={ledgerSearch} onChange={(e) => setLedgerSearch(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase tracking-widest outline-none shadow-sm" />
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" />
             </div>
           </div>
-        </div>
-        <div className="w-full lg:w-80 border-4 border-dashed border-[#3d0413]/30 rounded-[2rem] p-10 flex flex-col">
-          <h3 className="text-[#3d0413] font-black uppercase tracking-[0.2em] text-sm mb-6">LIVE TIMETABLE</h3>
-          <div className="space-y-4 flex-1">
-             {[
-               { time: '08:00', title: 'Power Systems', room: 'Lab 1', status: 'COMPLETED' },
-               { time: '10:00', title: 'Circuit Theory', room: 'Hall A', status: 'IN_PROGRESS' },
-               { time: '14:00', title: 'Microprocessors', room: 'Lab 4', status: 'UPCOMING' }
-             ].map((slot, i) => (
-               <div key={i} className={`p-4 rounded-2xl border transition-all ${slot.status === 'IN_PROGRESS' ? 'bg-rose-50 border-rose-200 shadow-md scale-[1.02]' : 'bg-slate-50 border-slate-100 opacity-60'}`}>
-                  <p className="text-[10px] font-black text-slate-400 mb-1">{slot.time}</p>
-                  <h4 className="font-black text-xs uppercase text-slate-800">{slot.title}</h4>
-                  <p className="text-[9px] font-bold text-slate-500 uppercase mt-1">{slot.room}</p>
-               </div>
-             ))}
+          <div className="flex items-center gap-3">
+            <button onClick={() => { classStudents.forEach(st => setStudentStatus(st.id, 'PRESENT')); showToast("Marked All Present"); }} className="px-6 py-4 bg-emerald-50 text-emerald-700 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 transition flex items-center gap-2 border border-emerald-100"><UserCheck2 size={16} /> Mark All Present</button>
+            <button onClick={() => setIsAddStudentModalOpen(true)} className="px-6 py-4 bg-white border border-slate-200 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition flex items-center gap-2"><UserPlus size={16} /> Enroll New</button>
+            <button onClick={handleExportPDF} className="px-6 py-4 bg-white border border-slate-200 text-slate-600 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition flex items-center gap-2"><FileDown size={16} /> Official PDF</button>
           </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="bg-slate-50/50 border-b border-slate-100 text-slate-400 font-black text-[10px] uppercase tracking-widest">
+                <th className="px-10 py-6 text-left">Student Node</th>
+                <th className="px-10 py-6 text-left">Admission No</th>
+                <th className="px-10 py-6 text-left">Phone Node</th>
+                <th className="px-10 py-6 text-center">Mark Presence</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {filteredStudents.map(st => (
+                <tr key={st.id} className="hover:bg-slate-50/30 transition-all group">
+                  <td className="px-10 py-6">
+                    <div className="flex items-center gap-4">
+                      <div className="w-8 h-8 bg-[#3d0413]/10 text-[#3d0413] rounded-lg flex items-center justify-center font-black text-xs">
+                        {st.name.charAt(0)}
+                      </div>
+                      <span className="font-black text-slate-900 uppercase text-xs">{st.name}</span>
+                    </div>
+                  </td>
+                  <td className="px-10 py-6 font-black text-slate-600 text-[11px] tracking-widest">{st.admNo}</td>
+                  <td className="px-10 py-6 font-black text-slate-600 text-[11px] tracking-widest">{st.phone}</td>
+                  <td className="px-10 py-6 text-center">
+                    <div className="flex items-center justify-center gap-5">
+                       <button onClick={() => setStudentStatus(st.id, 'PRESENT')} className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${attendanceLog[st.id] === 'PRESENT' ? 'bg-emerald-500 text-white shadow-lg scale-110' : 'bg-slate-50 text-slate-300 hover:text-emerald-500'}`}><Check size={20} strokeWidth={3} /></button>
+                       <button onClick={() => setStudentStatus(st.id, 'ABSENT')} className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${attendanceLog[st.id] === 'ABSENT' ? 'bg-rose-600 text-white shadow-lg scale-110' : 'bg-slate-50 text-slate-300 hover:text-rose-600'}`}><X size={20} strokeWidth={3} /></button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {filteredStudents.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-10 py-20 text-center">
+                     <Users size={48} className="mx-auto text-slate-200 mb-4" />
+                     <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">No matching peer nodes in this module ledger</p>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
   );
 
-  const PhysicalClassesOverview = (
-    <div className="max-w-7xl mx-auto py-12 px-6 space-y-12 animate-in fade-in duration-500 pb-24">
-       <header className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="flex items-center gap-6">
-             <button onClick={() => setCurrentView('HOME')} className="p-3 bg-white border border-slate-100 rounded-2xl text-slate-400 shadow-sm transition-transform active:scale-95"><ArrowLeft size={24} /></button>
-             <div>
-                <h2 className="text-4xl font-black text-slate-900 uppercase tracking-tight">Physical Classes Overview</h2>
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.3em] mt-2">Enterprise-grade lifecycle management</p>
-             </div>
-          </div>
-          <div className="flex items-center gap-3">
-             <button onClick={() => setIsOpeningModalOpen(true)} className="px-6 py-4 border-2 border-[#3d0413] text-[#3d0413] rounded-lg font-black uppercase text-[10px] tracking-widest hover:bg-[#3d0413] hover:text-white transition-all shadow-sm">School Opening</button>
-             <button onClick={() => setIsClosingModalOpen(true)} className="px-6 py-4 border-2 border-[#3d0413] text-[#3d0413] rounded-lg font-black uppercase text-[10px] tracking-widest hover:bg-[#3d0413] hover:text-white transition-all shadow-sm">School Closing</button>
-             <button onClick={() => setIsAddClassModalOpen(true)} className="flex items-center gap-3 px-8 py-4 bg-[#3d0413] text-white rounded-[1.5rem] font-black uppercase text-[10px] tracking-widest shadow-2xl active:scale-95 transition-all"><PlusCircle size={20}/> ADD CLASSES</button>
-          </div>
-       </header>
-       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-          {myPhysicalClasses.map(cls => (
-            <div key={cls.id} onClick={() => { setSelectedPhysicalClass(cls); setCurrentView('PHYSICAL_CLASS_DETAIL'); setSubPortal('COMMAND'); }} className="bg-white rounded-[3rem] border border-slate-200 p-10 shadow-sm hover:shadow-2xl hover:-translate-y-2 transition-all cursor-pointer group">
-               <div className="flex justify-between items-start mb-8">
-                  <span className="px-4 py-1.5 bg-rose-50 text-[#3d0413] text-[9px] font-black uppercase rounded-xl border border-rose-100">{cls.code}</span>
-                  <div className="flex items-center gap-1 text-emerald-500 text-[9px] font-black uppercase tracking-widest"><div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div> Operational</div>
-               </div>
-               <h3 className="text-2xl font-black text-slate-900 mb-8 uppercase leading-tight group-hover:text-[#3d0413] transition-colors">{cls.title}</h3>
-               <div className="space-y-4 mb-6 border-y border-slate-50 py-6">
-                  <div className="flex items-center justify-between text-[11px] font-bold"><span className="text-slate-400 uppercase tracking-widest">Facility</span><span className="text-slate-900 uppercase">{cls.room}</span></div>
-                  <div className="flex items-center justify-between text-[11px] font-bold"><span className="text-slate-400 uppercase tracking-widest">Registry Nodes</span><span className="text-slate-900">{cls.studentCount} Students</span></div>
-                  <div className="flex items-center justify-between text-[11px] font-bold"><span className="text-slate-400 uppercase tracking-widest">Next Window</span><span className="text-[#3d0413] uppercase">{cls.nextSession}</span></div>
-               </div>
-               <div className="flex flex-col gap-3">
-                  <div className="flex flex-wrap gap-2">
-                    <button onClick={(e) => { e.stopPropagation(); setSelectedPhysicalClass(cls); setCurrentView('PHYSICAL_CLASS_DETAIL'); setSubPortal('TIMETABLE'); }} className="px-4 py-2 border-2 border-[#3d0413]/30 hover:border-[#3d0413] text-[#3d0413] rounded-xl font-black uppercase text-[10px] tracking-widest transition-all">Time Table</button>
-                    <button onClick={(e) => { e.stopPropagation(); setSelectedPhysicalClass(cls); setCurrentView('PHYSICAL_CLASS_DETAIL'); setSubPortal('ATTENDANCE'); }} className="px-4 py-2 border-2 border-[#3d0413]/30 hover:border-[#3d0413] text-[#3d0413] rounded-xl font-black uppercase text-[10px] tracking-widest transition-all">Register</button>
-                  </div>
-                  <button className="w-full py-5 bg-slate-50 group-hover:bg-[#3d0413] group-hover:text-white text-slate-400 rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] transition-all flex items-center justify-center gap-3">ACCESS COMMAND CENTER <ChevronRight size={16}/></button>
-               </div>
+  const renderTimetable = () => (
+    <div className="bg-white p-12 rounded-[4rem] border border-slate-100 shadow-xl animate-in fade-in slide-in-from-right-8 duration-700 relative">
+      <div className="flex items-center justify-between mb-12">
+        <h3 className="text-3xl font-black text-slate-900 uppercase tracking-tight">TIME TABLE</h3>
+        <button 
+          onClick={() => handleOpenSessionModal()}
+          className="px-8 py-4 bg-[#3d0413] text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-2xl active:scale-95 transition-all flex items-center gap-3 border-b-6 border-black"
+        >
+          <CalendarPlus size={20} /> Provision Session
+        </button>
+      </div>
+
+      <div className="grid grid-cols-5 gap-8">
+        {['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'].map(day => (
+          <div key={day} className="space-y-6">
+            <div className="text-center py-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <span className="text-[10px] font-black text-[#3d0413] uppercase tracking-[0.3em]">{day}</span>
             </div>
-          ))}
-       </div>
-       <div className="pt-12">
-          <button onClick={() => setCurrentView('SCHOOL_CALENDAR')} className="w-full py-16 border-[4px] border-[#3d0413] rounded-[1rem] bg-white text-[#3d0413] hover:bg-[#3d0413] hover:text-white transition-all duration-500 shadow-sm flex items-center justify-center group"><h3 className="text-4xl font-black uppercase tracking-[0.2em] group-hover:scale-105 transition-transform">SCHOOL CALENDAR</h3></button>
-       </div>
+            <div className="min-h-[350px] flex flex-col gap-4">
+              {(selectedPhysicalClass?.schedule || []).filter(s => s.day === day).length === 0 && (
+                <div className="flex-1 border-2 border-dashed border-slate-100 rounded-[2.5rem] flex items-center justify-center opacity-20">
+                  <Clock size={32} />
+                </div>
+              )}
+              {(selectedPhysicalClass?.schedule || []).filter(s => s.day === day).map(s => (
+                <div key={s.id} className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm hover:shadow-2xl transition-all group relative">
+                  <div className="absolute top-4 right-4 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button 
+                      onClick={() => handleOpenSessionModal(s)}
+                      className="p-2 bg-slate-50 text-slate-400 hover:text-[#3d0413] rounded-lg transition-all"
+                    >
+                      <Edit3 size={14} />
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteSession(s.id)}
+                      className="p-2 bg-slate-50 text-slate-400 hover:text-rose-600 rounded-lg transition-all"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                  <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-3">{s.time}</p>
+                  <p className="font-black text-slate-900 uppercase text-xs mb-6 leading-tight">{s.venue}</p>
+                  <span className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest ${s.type === 'PRACTICAL' ? 'bg-amber-50 text-amber-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                    {s.type}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 
-  const PhysicalClassDashboardDetail = (
-    <div className="flex h-[calc(100vh-65px)] bg-slate-50 overflow-hidden animate-in fade-in duration-500">
-      <aside className="w-80 bg-white border-r border-slate-200 flex flex-col shadow-2xl z-20">
-        <div className="p-8 border-b border-slate-100">
-           <button onClick={() => setCurrentView('PHYSICAL_CLASSES_OVERVIEW')} className="flex items-center gap-3 text-slate-400 hover:text-[#3d0413] transition-colors mb-8"><ArrowLeft size={18}/><span className="text-[10px] font-black uppercase tracking-[0.2em]">Return to Overview</span></button>
-           <div className="mb-6"><span className="px-3 py-1 bg-rose-50 text-[#3d0413] rounded-lg text-[8px] font-black uppercase border border-rose-100">{selectedPhysicalClass?.code}</span><h2 className="text-xl font-black text-slate-900 uppercase tracking-tight mt-3 leading-tight">{selectedPhysicalClass?.title}</h2></div>
-           <p className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.3em]">Institutional Node v5.0</p>
+  const renderStudents = () => (
+    <div className="space-y-10 animate-in fade-in slide-in-from-left-8 duration-700">
+      <div className="flex items-center justify-between">
+        <div className="relative w-96">
+          <input 
+            type="text" 
+            placeholder="Search Academic Roster..." 
+            value={ledgerSearch}
+            onChange={(e) => setLedgerSearch(e.target.value)}
+            className="w-full pl-16 pr-8 py-5 bg-white border border-slate-200 rounded-[2rem] text-sm font-bold shadow-sm outline-none focus:ring-4 focus:ring-[#3d0413]/5 transition-all" 
+          />
+          <Search size={20} className="absolute left-6 top-1/2 -translate-y-1/2 text-slate-300" />
         </div>
-        <nav className="flex-1 p-6 space-y-2 overflow-y-auto no-scrollbar">
-           {[
-             { id: 'COMMAND', label: 'Executive Center', icon: <LayoutDashboard size={18}/> },
-             { id: 'ATTENDANCE', label: 'Attendance Lab', icon: <Fingerprint size={18}/> },
-             { id: 'TIMETABLE', label: 'Timetable Matrix', icon: <Clock size={18}/> },
-             { id: 'STUDENTS', label: 'Student Roster', icon: <Users size={18}/> },
-             { id: 'RESOURCES', label: 'STORAGE', icon: <HardDrive size={18}/> },
-             { id: 'ASSESSMENT', label: 'Academic Eval', icon: <FileCheck size={18}/> },
-           ].map(item => (
-             <button key={item.id} onClick={() => { setSubPortal(item.id as SubPortalView); setIsAddingStudent(false); }} className={`w-full flex items-center gap-4 px-6 py-4 rounded-2xl transition-all group ${subPortal === item.id ? 'bg-[#3d0413] text-white shadow-xl translate-x-2' : 'text-slate-500 hover:bg-slate-50 hover:text-[#3d0413]'}`}><span className={`${subPortal === item.id ? 'text-rose-400' : 'text-slate-300 group-hover:text-rose-950'}`}>{item.icon}</span><span className="text-[10px] font-black uppercase tracking-widest">{item.label}</span></button>
-           ))}
-        </nav>
-      </aside>
-      <main className="flex-1 overflow-y-auto p-12 bg-slate-50 relative">
-        <div className="max-w-7xl mx-auto space-y-12">
-           {subPortal === 'COMMAND' && (
-             <div className="space-y-12 animate-in slide-in-from-bottom-4 duration-500">
-                <div className="flex justify-between items-end">
-                   <div>
-                      h3 className="text-4xl font-black text-slate-900 uppercase tracking-tighter">EXECUTIVE DASHBOARD</h3>
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em] mt-2">REAL-TIME SESSION INTELLIGENCE</p>
-                   </div>
-                   <div className="flex gap-4">
-                      <button className="px-8 py-3.5 bg-white border border-slate-100 rounded-2xl text-[10px] font-black uppercase tracking-widest text-[#3d0413] shadow-sm hover:shadow-xl transition-all">EXPORT AUDIT</button>
-                      <button className="px-8 py-3.5 bg-[#3d0413] text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-2xl active:scale-95 transition-all">REQUEST INTERVENTION</button>
-                   </div>
-                </div>
-                <div className="flex flex-col lg:flex-row gap-8">
-                   <div className="lg:w-1/3">
-                      <div className={`bg-white p-12 rounded-[3.5rem] border transition-all duration-700 group relative overflow-hidden h-full flex flex-col justify-center ${focusedStudent ? 'border-[#3d0413] shadow-2xl scale-[1.02]' : 'border-slate-100 shadow-sm'}`}>
-                        {focusedStudent && <button onClick={() => setFocusedStudent(null)} className="absolute top-8 right-8 p-3 bg-[#3d0413] text-white rounded-full hover:bg-black transition-all z-20 shadow-xl scale-110"><X size={18}/></button>}
-                        <div className={`w-20 h-20 rounded-[2rem] flex items-center justify-center mb-10 transition-all duration-500 shadow-xl ${focusedStudent ? 'bg-[#3d0413] text-white rotate-12 scale-110' : 'bg-rose-50 text-[#3d0413]'}`}>{focusedStudent ? <UserCheck size={40}/> : <Users size={40}/>}</div>
-                        <div className="animate-in fade-in duration-1000">
-                          <p className="text-[11px] font-black uppercase text-slate-400 tracking-[0.5em] mb-4">{focusedStudent ? 'NODE SYNC PERFORMANCE' : 'Attendance Rate'}</p>
-                          <h4 className={`font-black text-[#1a202c] mb-4 transition-all duration-700 tracking-tighter ${focusedStudent ? 'text-6xl scale-105' : 'text-8xl'}`}>{focusedStudent ? focusedStudent.history.replace(' Att.', '') : '94.2%'}</h4>
-                          <div className="flex items-center gap-3">
-                            <div className={`flex items-center gap-3 px-6 py-2 rounded-full transition-all ${focusedStudent ? 'bg-rose-50 border border-rose-100' : ''}`}>
-                               <div className={`w-2.5 h-2.5 rounded-full animate-pulse ${focusedStudent ? 'bg-[#3d0413]' : 'bg-emerald-500'}`}></div> 
-                               <span className={`text-[12px] font-black uppercase tracking-[0.2em] ${focusedStudent ? 'text-[#3d0413]' : 'text-emerald-500'}`}>{focusedStudent ? focusedStudent.name : '+2.1% GROWTH'}</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                   </div>
-                   <div className="lg:w-2/3 space-y-8">
-                      <div className="flex justify-end items-center">
-                         {isAddingStudent ? StudentAddForm : (
-                            <button onClick={() => setIsAddingStudent(true)} className="px-12 py-5 bg-[#3d0413] text-white rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest shadow-[0_25px_50px_-12px_rgba(61,4,19,0.3)] hover:bg-black transition-all active:scale-95 flex items-center gap-4 group">
-                               <div className="w-8 h-8 bg-white/10 rounded-lg flex items-center justify-center group-hover:bg-white/20 transition-all"><UserPlus size={18}/></div>
-                               ADD STUDENT
-                            </button>
-                         )}
-                      </div>
-                      <div className="bg-white border-2 border-rose-900/10 rounded-[3rem] shadow-sm overflow-hidden">
-                         <table className="w-full text-left">
-                            <thead className="bg-rose-50/20 border-b border-rose-900/10">
-                               <tr className="divide-x divide-rose-900/10">
-                                  <th className="px-8 py-6 text-[10px] font-black uppercase text-[#3d0413] tracking-[0.3em]">STUDENT NODE</th>
-                                  <th className="px-8 py-6 text-[10px] font-black uppercase text-[#3d0413] tracking-[0.3em]">ADM NO</th>
-                                  <th className="px-8 py-6 text-[10px] font-black uppercase text-[#3d0413] tracking-[0.3em]">HISTORY</th>
-                               </tr>
-                            </thead>
-                            <tbody className="divide-y divide-rose-900/10">
-                               {students.map(std => (
-                                 <tr key={std.id} className={`transition-all duration-300 divide-x divide-rose-900/10 group cursor-pointer ${focusedStudent?.id === std.id ? 'bg-[#3d0413]/5' : 'hover:bg-rose-50/10'}`} onClick={() => setFocusedStudent(std)}>
-                                    <td className="px-8 py-6"><div className="flex items-center gap-4"><div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm transition-all ${focusedStudent?.id === std.id ? 'bg-[#3d0413] text-white' : 'bg-slate-100 text-[#3d0413]'}`}>{std.name.charAt(0)}</div><span className="text-[12px] font-black uppercase">{std.name}</span></div></td>
-                                    <td className="px-8 py-6 text-[11px] font-black text-slate-400 uppercase">{std.admNo}</td>
-                                    <td className="px-8 py-6"><span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-lg text-[9px] font-black uppercase border border-emerald-100">{std.history}</span></td>
-                                 </tr>
-                               ))}
-                            </tbody>
-                         </table>
-                      </div>
-                   </div>
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">
-                   <div className="lg:col-span-2 bg-white rounded-[3.5rem] border border-slate-100 p-12 shadow-sm relative overflow-hidden">
-                      <div className="flex items-center justify-between mb-16">
-                         <h4 className="text-2xl font-black text-slate-900 uppercase tracking-tight">GRAPHICAL DATA</h4>
-                         <span className="px-5 py-2 bg-slate-100 rounded-full text-[9px] font-black text-slate-400 uppercase tracking-widest">{focusedStudent ? `${focusedStudent.name.toUpperCase()} REGISTRY` : 'WEEKLY SYNC'}</span>
-                      </div>
-                      <div className="h-64 flex items-end gap-5">
-                         {getGraphData().map((h, i) => (
-                           <div key={i} className="flex-1 bg-slate-50 rounded-2xl relative group cursor-help transition-all">
-                              <div className={`absolute bottom-0 left-0 right-0 rounded-2xl transition-all duration-1000 ${focusedStudent ? 'bg-rose-900' : 'bg-[#3d0413]'} group-hover:bg-rose-600`} style={{ height: `${Math.max(10, h)}%` }}></div>
-                           </div>
-                         ))}
-                      </div>
-                   </div>
-                   <div className="bg-[#3d0413] rounded-[3.5rem] p-12 text-white shadow-2xl flex flex-col justify-between group overflow-hidden relative">
-                      <div className="relative z-10">
-                        <div className="w-14 h-14 bg-white/10 backdrop-blur-md rounded-2xl flex items-center justify-center mb-10 border border-white/10"><ShieldAlert size={32} className="text-rose-400" /></div>
-                        <h4 className="text-3xl font-black uppercase leading-none tracking-tight mb-6">RISK DETECTION<br/>NODE</h4>
-                        <p className="text-sm text-rose-100/70 font-medium leading-relaxed">System has flagged critical attendance gaps.</p>
-                      </div>
-                      <button className="relative z-10 w-full py-5 bg-white text-[#3d0413] rounded-2xl font-black uppercase text-[10px] tracking-[0.2em] mt-12 hover:bg-rose-50 transition-all shadow-xl">RESOLVE ALERTS</button>
-                   </div>
-                </div>
-             </div>
-           )}
+        <button onClick={() => setIsAddStudentModalOpen(true)} className="px-10 py-5 bg-[#3d0413] text-white rounded-[2rem] text-[10px] font-black uppercase tracking-widest shadow-2xl active:scale-95 transition-all border-b-6 border-black">Enroll Peer Node</button>
+      </div>
 
-           {subPortal === 'ATTENDANCE' && (
-             <div className="space-y-12 animate-in slide-in-from-right-4 duration-500">
-                <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-                   <div>
-                      <h3 className="text-4xl font-black text-slate-900 uppercase tracking-tighter">Attendance Protocol</h3>
-                      <p className="text-[10px] font-black text-rose-950 uppercase tracking-[0.4em] mt-2 flex items-center gap-2">
-                        <span className="w-2 h-2 bg-rose-600 rounded-full animate-pulse"></span>
-                        Active Session: {selectedPhysicalClass?.title} • {selectedPhysicalClass?.room}
-                      </p>
-                   </div>
-                   <div className="flex gap-4">
-                     <button onClick={markAllPresent} className="px-8 py-4 bg-white border-2 border-slate-100 text-slate-500 rounded-xl font-black uppercase text-[10px] tracking-widest hover:border-[#3d0413] hover:text-[#3d0413] transition-all flex items-center gap-3">
-                        <UserCheck size={16}/> MARK ALL PRESENT
-                     </button>
-                     <button onClick={handleSaveAttendance} disabled={isSavingAttendance} className="px-8 py-4 bg-[#3d0413] text-white rounded-xl font-black uppercase text-[10px] tracking-widest shadow-xl flex items-center gap-3 hover:bg-black transition-all">
-                        {isSavingAttendance ? <Loader2 className="animate-spin" size={16}/> : <Save size={16}/>} SAVE REGISTRY
-                     </button>
-                   </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                   <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
-                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">PRESENT COUNT</p>
-                      <h5 className="text-4xl font-black text-emerald-500">{Object.values(attendanceState).filter(s => s === 'present').length}</h5>
-                   </div>
-                   <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
-                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">ABSENT COUNT</p>
-                      <h5 className="text-4xl font-black text-rose-500">{Object.values(attendanceState).filter(s => s === 'absent').length}</h5>
-                   </div>
-                   <div className="bg-white p-8 rounded-[2.5rem] border border-slate-100 shadow-sm flex flex-col items-center justify-center text-center">
-                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">PENDING NODES</p>
-                      <h5 className="text-4xl font-black text-slate-300">{students.length - Object.keys(attendanceState).length}</h5>
-                   </div>
-                </div>
-
-                <div className="bg-white/50 backdrop-blur-xl rounded-[3.5rem] border border-slate-100 shadow-xl overflow-hidden relative">
-                   {saveStatus === 'success' && <div className="absolute inset-0 bg-emerald-500/90 z-50 flex items-center justify-center backdrop-blur-md animate-in fade-in"><div className="text-white text-center"><CheckCircle2 size={64} className="mx-auto mb-6"/><h4 className="text-3xl font-black uppercase tracking-tight">SYNC SUCCESSFUL</h4><p className="font-bold uppercase tracking-widest text-[10px] mt-4 opacity-80">Registry has been updated globally.</p></div></div>}
-                   <table className="w-full text-left">
-                      <thead className="bg-slate-100/50 border-b border-slate-200">
-                        <tr className="divide-x divide-slate-200">
-                          <th className="px-10 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.3em]">STUDENT NODE</th>
-                          <th className="px-10 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.3em]">ADM NO</th>
-                          <th className="px-10 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.3em] text-center w-60">TOGGLE</th>
-                          <th className="px-10 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.3em] text-center">HISTORY</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 bg-white">
-                         {students.map(std => (
-                           <tr key={std.id} className={`transition-all duration-300 divide-x divide-slate-50 ${attendanceState[std.id] === 'present' ? 'bg-emerald-50/30' : attendanceState[std.id] === 'absent' ? 'bg-rose-50/30' : 'hover:bg-slate-50/50'}`}>
-                              <td className="px-10 py-6">
-                                 <div className="flex items-center gap-4">
-                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm transition-all ${attendanceState[std.id] === 'present' ? 'bg-emerald-500 text-white shadow-lg' : attendanceState[std.id] === 'absent' ? 'bg-rose-500 text-white shadow-lg' : 'bg-slate-100 text-[#3d0413]'}`}>{std.name.charAt(0)}</div>
-                                    <span className={`text-[13px] font-black uppercase tracking-tight transition-colors ${attendanceState[std.id] ? 'text-slate-900' : 'text-slate-700'}`}>{std.name}</span>
-                                 </div>
-                              </td>
-                              <td className="px-10 py-6 text-[12px] font-black text-slate-400 uppercase tracking-widest">{std.admNo}</td>
-                              <td className="px-10 py-6">
-                                 <div className="flex items-center justify-center gap-5">
-                                    <button 
-                                      onClick={() => markAttendance(std.id, 'present')} 
-                                      disabled={attendanceState[std.id] === 'present'}
-                                      className={`w-12 h-12 rounded-2xl transition-all flex items-center justify-center border-2 ${attendanceState[std.id] === 'present' ? 'bg-emerald-500 text-white border-emerald-500 shadow-xl scale-110' : 'bg-white text-slate-300 border-slate-100 hover:border-emerald-200 hover:text-emerald-500'}`}
-                                      title="Mark Present"
-                                    >
-                                      <CheckCircle2 size={22}/>
-                                    </button>
-                                    <button 
-                                      onClick={() => markAttendance(std.id, 'absent')} 
-                                      disabled={attendanceState[std.id] === 'present'}
-                                      className={`w-12 h-12 rounded-2xl transition-all flex items-center justify-center border-2 ${
-                                        attendanceState[std.id] === 'absent' 
-                                          ? 'bg-rose-500 text-white border-rose-500 shadow-xl scale-110' 
-                                          : attendanceState[std.id] === 'present'
-                                            ? 'bg-slate-50 text-slate-100 border-slate-50 opacity-20 cursor-not-allowed'
-                                            : 'bg-white text-slate-300 border-slate-100 hover:border-rose-200 hover:text-rose-500'
-                                      }`}
-                                      title={attendanceState[std.id] === 'present' ? "Locked" : "Mark Absent"}
-                                    >
-                                      <XCircle size={22}/>
-                                    </button>
-                                 </div>
-                              </td>
-                              <td className="px-10 py-6">
-                                 <div className="flex items-center justify-center">
-                                    <button 
-                                      onClick={() => { setSelectedStudentForHistory(std); setCurrentView('STUDENT_HISTORY'); }}
-                                      className="p-3 bg-rose-50 text-[#3d0413] rounded-xl hover:bg-[#3d0413] hover:text-white transition-all shadow-sm group/hist"
-                                      title="View Attendance Calendar"
-                                    >
-                                      <CalendarSearch size={20} className="group-hover/hist:scale-110 transition-transform" />
-                                    </button>
-                                 </div>
-                              </td>
-                           </tr>
-                         ))}
-                      </tbody>
-                   </table>
-                </div>
-             </div>
-           )}
-           {subPortal === 'TIMETABLE' && (
-             <div className="space-y-12 animate-in fade-in duration-500">
-                <header className="flex justify-between items-center bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
-                   <div className="flex items-center gap-6">
-                      {returnToModal && (
-                        <button 
-                          onClick={() => {
-                            setCurrentView('PHYSICAL_CLASSES_OVERVIEW');
-                            setIsAddClassModalOpen(true);
-                            setReturnToModal(false);
-                          }}
-                          className="p-3 bg-slate-50 border border-slate-100 rounded-2xl text-slate-400 hover:text-[#3d0413] transition-all active:scale-95 shadow-sm"
-                        >
-                          <ArrowLeft size={24} />
-                        </button>
-                      )}
-                      <div>
-                        <h4 className="text-3xl font-black text-[#1a202c] uppercase tracking-tighter">CLASS SCHEDULE MATRIX</h4>
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em] mt-1">Multi-node scheduling interface</p>
+      <div className="bg-white rounded-[3.5rem] border border-slate-100 shadow-2xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="bg-slate-50/50 border-b border-slate-100 text-slate-400 font-black text-[10px] uppercase tracking-widest">
+                <th className="px-10 py-8 text-left">Academic Peer</th>
+                <th className="px-10 py-8 text-left">Registry ID</th>
+                <th className="px-10 py-8 text-left">Communication Node</th>
+                <th className="px-10 py-8 text-center">Engagement %</th>
+                <th className="px-10 py-8 text-center">Enrolment Status</th>
+                <th className="px-10 py-8 text-center">Attendance History</th>
+                <th className="px-10 py-8 text-center">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {filteredStudents.map(st => (
+                <tr key={st.id} className="hover:bg-slate-50/30 transition-all group">
+                  <td className="px-10 py-6">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 bg-slate-50 rounded-xl flex items-center justify-center text-[#3d0413] font-black group-hover:bg-[#3d0413] group-hover:text-white transition-all duration-300">
+                        {st.name.charAt(0)}
                       </div>
-                   </div>
-                   <button onClick={() => setIsAddingSlot(true)} className="px-10 py-5 bg-[#3d0413] text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl flex items-center gap-3 hover:bg-black transition-all"><PlusCircle size={18}/> ADD SESSION SLOT</button>
-                </header>
-                <div className="bg-white rounded-[3.5rem] border border-slate-100 shadow-xl overflow-hidden">
-                   <div className="grid grid-cols-7 divide-x divide-slate-100">
-                      {daysOfWeek.map(day => (
-                        <div key={day} className={`p-8 min-h-[400px] transition-all ${day === activeDay ? 'bg-[#3d0413]/5' : ''}`}>
-                           <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-8 border-b border-slate-100 pb-4">{day.slice(0, 3)}</h5>
-                           <div className="space-y-4">
-                              {timetableData[day]?.slots
-                                .filter(s => s.classId === selectedPhysicalClass?.id) // Only show sessions for THIS class
-                                .map(s => (
-                                <div key={s.id} className="p-4 bg-white border border-slate-200 rounded-2xl shadow-sm text-[10px] font-black uppercase tracking-tight relative group">
-                                   <button 
-                                     onClick={(e) => { e.stopPropagation(); handleDeleteSlot(day, s.id); }}
-                                     className="absolute top-2 right-2 p-1.5 bg-rose-50 text-rose-600 rounded-lg hover:bg-rose-600 hover:text-white transition-all shadow-sm"
-                                   >
-                                     <Trash2 size={12} />
-                                   </button>
-                                   <div className="text-rose-900 mb-1">{s.time}</div>
-                                   <div className="text-slate-900 leading-tight font-black">{s.className}</div>
-                                   <div className="text-slate-400 mt-2 font-bold opacity-60">{s.room}</div>
-                                </div>
-                              ))}
-                              <button onClick={() => { setActiveDay(day); setIsAddingSlot(true); }} className="w-full py-4 border-2 border-dashed border-slate-200 rounded-2xl flex items-center justify-center text-slate-300 hover:border-[#3d0413]/20 hover:text-[#3d0413]/20 transition-all"><Plus size={16}/></button>
-                           </div>
-                        </div>
-                      ))}
-                   </div>
-                </div>
-             </div>
-           )}
-
-           {subPortal === 'RESOURCES' && (
-             <div className="space-y-12 animate-in slide-in-from-bottom-4 duration-500">
-                <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm">
-                   <div>
-                      <h3 className="text-4xl font-black text-slate-900 uppercase tracking-tighter">Institutional STORAGE</h3>
-                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em] mt-2">HISTORICAL REGISTRY ARCHIVE • ALL SAVED DATA</p>
-                   </div>
-                   <div className="flex gap-4">
-                      <button className="px-8 py-4 bg-[#3d0413] text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl hover:bg-black transition-all flex items-center gap-3">
-                         <HistoryIcon size={18}/> SYSTEM AUDIT
-                      </button>
-                      <button className="px-8 py-4 bg-white border-2 border-slate-100 text-[#3d0413] rounded-2xl font-black uppercase text-[10px] tracking-widest hover:border-[#3d0413] transition-all flex items-center gap-3">
-                         <Download size={18}/> DOWNLOAD ALL
-                      </button>
-                   </div>
-                </header>
-
-                {/* PROMINENT CLASS NAME HEADER AS REQUESTED */}
-                <div className="bg-white p-10 rounded-[3rem] border border-slate-100 shadow-sm relative overflow-hidden group">
-                  <div className="absolute top-0 right-0 w-48 h-48 bg-rose-50 rounded-full blur-3xl -mr-24 -mt-24 group-hover:bg-rose-100 transition-colors duration-700"></div>
-                  <div className="flex items-center gap-6 relative z-10">
-                    <div className="w-16 h-16 bg-[#3d0413] text-white rounded-[1.5rem] flex items-center justify-center shadow-2xl">
-                       <GraduationCap size={32} />
+                      <span className="font-black text-slate-900 uppercase text-xs tracking-tight">{st.name}</span>
                     </div>
-                    <div>
-                      <h4 className="text-3xl font-black text-slate-900 uppercase tracking-tighter leading-tight">{selectedPhysicalClass?.title}</h4>
-                      <p className="text-[11px] font-bold text-slate-400 uppercase tracking-[0.4em] mt-2 flex items-center gap-2">
-                        <span className="w-2 h-2 bg-emerald-500 rounded-full"></span>
-                        ACTIVE REGISTRY STORAGE NODE • {selectedPhysicalClass?.code}
-                      </p>
+                  </td>
+                  <td className="px-10 py-6 font-black text-slate-600 text-[11px] tracking-widest">{st.admNo}</td>
+                  <td className="px-10 py-6 font-black text-slate-600 text-[11px] tracking-widest">{st.phone}</td>
+                  <td className="px-10 py-6 text-center">
+                    <div className="inline-flex items-center gap-2">
+                      <span className="font-black text-slate-900 text-[11px]">{st.attendance}%</span>
+                      <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div 
+                          className={`h-full rounded-full ${st.attendance > 75 ? 'bg-emerald-500' : st.attendance > 40 ? 'bg-amber-500' : 'bg-rose-500'}`} 
+                          style={{ width: `${st.attendance}%` }}
+                        ></div>
+                      </div>
                     </div>
+                  </td>
+                  <td className="px-10 py-6 text-center">
+                    <span className={`px-4 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest border ${
+                      st.status === 'ACTIVE' ? 'bg-emerald-50 text-emerald-600 border-emerald-100' : 
+                      st.status === 'PROBATION' ? 'bg-amber-50 text-amber-600 border-amber-100' : 
+                      'bg-rose-50 text-rose-600 border-rose-100'
+                    }`}>
+                      {st.status}
+                    </span>
+                  </td>
+                  <td className="px-10 py-6 text-center">
+                    <button 
+                      onClick={() => setHistoryStudent(st)}
+                      className="p-3 bg-slate-50 text-[#3d0413] hover:bg-[#3d0413] hover:text-white rounded-xl shadow-sm transition-all"
+                    >
+                      <History size={18} />
+                    </button>
+                  </td>
+                  <td className="px-10 py-6 text-center">
+                    <div className="flex items-center justify-center gap-3">
+                      <button 
+                        onClick={() => setMessagingStudent(st)}
+                        className="p-2.5 bg-slate-50 text-slate-400 hover:text-[#3d0413] hover:bg-white hover:shadow-md rounded-xl transition-all" 
+                      >
+                        <Mail size={16} />
+                      </button>
+                      <button 
+                        onClick={() => setAnalyticsStudent(st)}
+                        className="p-2.5 bg-slate-50 text-slate-400 hover:text-emerald-600 hover:bg-white hover:shadow-md rounded-xl transition-all" 
+                      >
+                        <BarChart3 size={16} />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {filteredStudents.length === 0 && (
+                <tr>
+                   <td colSpan={7} className="px-10 py-20 text-center">
+                      <Users size={64} className="mx-auto text-slate-100 mb-4" />
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">No peer nodes joined this institutional repository module</p>
+                   </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderMaterials = () => {
+    const isSearching = materialsSearch.trim().length > 0;
+    const showList = activeMaterialCategory !== null || isSearching;
+    return (
+      <div className="space-y-10 animate-in fade-in slide-in-from-bottom-8 duration-700">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="flex flex-col gap-2">
+            <h3 className="text-4xl font-black uppercase tracking-tight text-slate-900">
+              {activeMaterialCategory ? activeMaterialCategory.replace('_', ' ') : isSearching ? 'Search Results' : 'Asset Repository'}
+            </h3>
+            {activeMaterialCategory && (
+              <button 
+                onClick={() => { setActiveMaterialCategory(null); setMaterialsSearch(''); }}
+                className="text-[10px] font-black text-[#3d0413] uppercase tracking-widest hover:underline flex items-center gap-1 w-fit"
+              >
+                <ArrowLeft size={12} /> Back to Categories
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-4">
+             <div className="relative w-full md:w-80">
+                <input 
+                  type="text" 
+                  placeholder="Filter Assets..." 
+                  value={materialsSearch}
+                  onChange={(e) => setMaterialsSearch(e.target.value)}
+                  className="w-full pl-12 pr-12 py-4 bg-white border border-slate-200 rounded-2xl text-[10px] font-black uppercase tracking-widest outline-none shadow-sm focus:ring-4 focus:ring-[#3d0413]/5 transition-all" 
+                />
+                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" />
+                {isSearching && (
+                  <button 
+                    onClick={() => setMaterialsSearch('')}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-300 hover:text-rose-600 transition-colors"
+                  >
+                    <X size={16} />
+                  </button>
+                )}
+             </div>
+             <button className="px-10 py-5 bg-[#3d0413] text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-2xl active:scale-95 transition-all flex items-center gap-3 border-b-6 border-black">
+               <CloudUpload size={20} /> Provision Asset
+             </button>
+          </div>
+        </div>
+        {!showList ? (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+            {[
+              { id: 'LECTURE_NOTES', title: 'Curriculum Nodes', icon: <FileText size={48} />, color: 'bg-emerald-50 text-emerald-600' },
+              { id: 'LAB_MANUALS', title: 'Practical Logs', icon: <Lock size={48} />, color: 'bg-amber-50 text-amber-600' },
+              { id: 'PAST_PAPERS', title: 'Historical Exams', icon: <History size={48} />, color: 'bg-indigo-50 text-indigo-600' },
+            ].map(cat => (
+              <div key={cat.id} onClick={() => setActiveMaterialCategory(cat.id as MaterialCategory)} className="bg-white p-14 rounded-[4.5rem] border border-slate-100 shadow-sm hover:shadow-2xl transition-all group cursor-pointer text-center">
+                <div className={`w-28 h-28 ${cat.color} rounded-[3rem] flex items-center justify-center mx-auto mb-10 group-hover:scale-110 transition-transform shadow-inner`}>{cat.icon}</div>
+                <h4 className="text-3xl font-black text-slate-900 uppercase tracking-tight mb-2">{cat.title}</h4>
+                <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest">Select to view files</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {filteredMaterials.map(note => (
+              <div key={note.id} className="bg-white p-10 rounded-[3.5rem] border border-slate-100 shadow-sm hover:shadow-2xl transition-all group relative overflow-hidden flex flex-col justify-between aspect-[5/6]">
+                <div>
+                  <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center text-[#3d0413] mb-6 group-hover:scale-110 transition-transform"><FileCode size={32} /></div>
+                  <h4 className="text-lg font-black text-slate-900 mb-1 uppercase line-clamp-2 leading-tight group-hover:text-[#3d0413] transition-colors">{note.title}</h4>
+                  <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4 truncate">{note.fileName}</p>
+                  <div className="flex flex-wrap gap-2 mb-8">
+                     {note.tags.map(tag => (
+                       <span key={tag} className="px-2.5 py-1 bg-slate-50 text-[9px] font-black uppercase text-slate-400 border border-slate-100 rounded-lg group-hover:bg-rose-50 group-hover:text-rose-600 transition-colors">{tag}</span>
+                     ))}
                   </div>
                 </div>
-
-                <div className="bg-white rounded-[3.5rem] border border-slate-100 shadow-xl overflow-hidden relative">
-                   <table className="w-full text-left">
-                      <thead className="bg-slate-50 border-b border-slate-100">
-                        <tr className="divide-x divide-slate-100">
-                          <th className="px-10 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.3em]">REGISTRY DATE</th>
-                          <th className="px-10 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.3em]">CLASS NODE</th>
-                          <th className="px-10 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.3em]">FACILITY</th>
-                          <th className="px-10 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.3em] text-center">ATTENDANCE</th>
-                          <th className="px-10 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.3em] text-center">ACTION</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-50">
-                         {historicalStorage
-                           .filter(item => !selectedPhysicalClass || item.classCode === selectedPhysicalClass.code)
-                           .map(item => (
-                           <tr key={item.id} className="transition-all duration-300 divide-x divide-slate-50 hover:bg-slate-50/50 group">
-                              <td className="px-10 py-6">
-                                 <div className="flex items-center gap-4">
-                                    <div className="w-12 h-12 rounded-2xl bg-[#3d0413]/5 text-[#3d0413] flex items-center justify-center">
-                                       <CalendarIcon size={20}/>
-                                    </div>
-                                    <span className="text-[14px] font-black uppercase text-slate-900 tracking-tight">
-                                       {item.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                                    </span>
-                                 </div>
-                              </td>
-                              <td className="px-10 py-6">
-                                 <p className="text-[12px] font-black text-slate-900 uppercase leading-none">{item.classTitle}</p>
-                                 <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">{item.classCode}</p>
-                              </td>
-                              <td className="px-10 py-6 text-[12px] font-black text-slate-400 uppercase tracking-widest">
-                                 {item.room}
-                              </td>
-                              <td className="px-10 py-6">
-                                 <div className="flex flex-col items-center">
-                                    <span className="text-sm font-black text-slate-900">{item.present}/{item.total}</span>
-                                    <div className="w-20 h-1.5 bg-slate-100 rounded-full mt-2 overflow-hidden">
-                                       <div 
-                                         className="h-full bg-emerald-500" 
-                                         style={{ width: `${(item.present / item.total) * 100}%` }}
-                                       ></div>
-                                    </div>
-                                 </div>
-                              </td>
-                              <td className="px-10 py-6">
-                                 <div className="flex justify-center">
-                                    <button 
-                                      onClick={() => {
-                                         const classMatch = myPhysicalClasses.find(c => c.code === item.classCode);
-                                         if (classMatch) setSelectedPhysicalClass(classMatch);
-                                         setSelectedHistoricalDate(item.date);
-                                         setIsFromStorage(true); // Track origin
-                                         setCurrentView('HISTORICAL_ATTENDANCE');
-                                      }}
-                                      className="px-6 py-3 bg-[#3d0413] text-white rounded-xl text-[9px] font-black uppercase tracking-widest shadow-lg hover:bg-black transition-all flex items-center gap-2"
-                                    >
-                                       <Eye size={14}/> VIEW REGISTER
-                                    </button>
-                                 </div>
-                              </td>
-                           </tr>
-                         ))}
-                      </tbody>
-                   </table>
-                   {historicalStorage.filter(item => !selectedPhysicalClass || item.classCode === selectedPhysicalClass.code).length === 0 && (
-                     <div className="p-20 text-center text-slate-400">
-                        <HistoryIcon size={48} className="mx-auto mb-4 opacity-20" />
-                        <p className="text-xs font-black uppercase tracking-widest">No matching history found for this node.</p>
-                     </div>
-                   )}
+                <div className="flex items-center justify-between border-t border-slate-50 pt-6">
+                  <div className="flex flex-col">
+                    <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest">{note.size}</span>
+                    <span className="text-[8px] font-black text-slate-300 uppercase tracking-widest">{note.uploadedDate}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button className="p-3 bg-slate-50 text-slate-400 hover:text-[#3d0413] hover:bg-white hover:shadow-md rounded-xl transition-all"><FileDown size={18} /></button>
+                    <button className="p-3 bg-slate-50 text-slate-400 hover:text-rose-600 hover:bg-rose-50 hover:shadow-md rounded-xl transition-all"><Trash2 size={18} /></button>
+                  </div>
                 </div>
-                <div className="bg-[#3d0413]/5 border-2 border-dashed border-[#3d0413]/10 p-12 rounded-[3.5rem] text-center">
-                   <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center text-[#3d0413] mx-auto mb-6 shadow-sm"><ShieldCheck size={32}/></div>
-                   <h4 className="text-xl font-black text-slate-900 uppercase">CORE INTEGRITY VERIFIED</h4>
-                   <p className="text-sm font-medium text-slate-500 max-w-md mx-auto mt-4 leading-relaxed uppercase tracking-widest">All registry entries are cryptographically signed and archived for institutional compliance.</p>
-                </div>
-             </div>
-           )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
 
-           {(subPortal === 'STUDENTS' || subPortal === 'ASSESSMENT') && (
-             <div className="h-[60vh] flex flex-col items-center justify-center text-center">
-                <div className="w-40 h-40 bg-white rounded-[4rem] border border-slate-200 shadow-2xl flex items-center justify-center text-[#3d0413] mb-12 animate-bounce"><RefreshCw size={64} className="animate-spin duration-[4000ms]" /></div>
-                <h4 className="text-4xl font-black text-slate-900 uppercase tracking-tighter">{subPortal} NODE OFFLINE</h4>
-                <p className="text-xs font-black text-slate-400 max-w-lg mt-6 leading-relaxed uppercase tracking-widest">This institutional module is currently undergoing core synchronization.</p>
-                <button onClick={() => setSubPortal('COMMAND')} className="mt-12 px-12 py-5 bg-white border border-slate-200 text-[#3d0413] rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-xl active:scale-95 transition-all">Return to Command Center</button>
-             </div>
-           )}
+  const renderOnlineClassDetail = () => (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-12 animate-in fade-in slide-in-from-right-12 duration-1000">
+      <div className="lg:col-span-2 space-y-12">
+        <div className="relative bg-slate-950 aspect-video rounded-[4rem] overflow-hidden shadow-[0_50px_100px_-20px_rgba(0,0,0,0.5)] group border border-white/5">
+          {!isCamOn ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center text-white/20">
+              <div className="w-32 h-32 bg-white/5 rounded-full flex items-center justify-center mb-8"><VideoOff size={64} /></div>
+              <p className="text-[10px] font-black uppercase tracking-[0.5em]">Institutional Feed Offline</p>
+            </div>
+          ) : (
+            <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover opacity-90" />
+          )}
+          <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex items-center gap-6 p-6 bg-white/10 backdrop-blur-3xl rounded-[2.5rem] border border-white/10 opacity-0 group-hover:opacity-100 transition-all duration-500 scale-90 group-hover:scale-100">
+            <button onClick={handleToggleMic} className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all ${isMicOn ? 'bg-white text-[#3d0413]' : 'bg-rose-600 text-white'}`}>{isMicOn ? <Mic size={24} /> : <MicOff size={24} />}</button>
+            <button onClick={handleToggleVideo} className={`w-16 h-16 rounded-2xl flex items-center justify-center transition-all ${isCamOn ? 'bg-white text-[#3d0413]' : 'bg-rose-600 text-white'}`}>{isCamOn ? <VideoIcon size={24} /> : <VideoOff size={24} />}</button>
+            <button className="w-16 h-16 rounded-2xl flex items-center justify-center bg-white/10 text-white hover:bg-white/20 transition-all"><MonitorUp size={24} /></button>
+            <div className="w-px h-10 bg-white/10 mx-2"></div>
+            <button onClick={() => { setCurrentView('HOME'); setSelectedOnlineClass(null); }} className="px-10 py-5 bg-rose-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest shadow-2xl active:scale-95 transition-all">Terminate</button>
+          </div>
+          <div className="absolute top-12 left-12 px-8 py-4 bg-emerald-500 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest flex items-center gap-3 shadow-2xl animate-pulse"><div className="w-2 h-2 bg-white rounded-full"></div> Live Feed Authorized</div>
         </div>
-      </main>
-    </div>
-  );
-
-  /**
-   * Institutional General Calendar View
-   * Clickable days synchronize navigation to specific Class Schedule Matrix nodes.
-   */
-  const SchoolCalendarView = (
-    <div className="max-w-7xl mx-auto py-12 px-6 space-y-12 animate-in fade-in duration-500 pb-20">
-       <header className="flex items-center justify-between gap-6">
-          <div className="flex items-center gap-6"><button onClick={() => setCurrentView('PHYSICAL_CLASSES_OVERVIEW')} className="p-3 bg-white border border-slate-100 rounded-2xl text-slate-400 shadow-sm transition-transform active:scale-95"><ArrowLeft size={24} /></button><div><h2 className="text-4xl font-black text-slate-900 uppercase tracking-tight">Academic Master</h2><p className="text-xs font-bold text-slate-400 uppercase tracking-[0.3em] mt-2">Institution registry chronology</p></div></div>
-          <div className="flex bg-white p-2 rounded-2xl shadow-sm border border-slate-100"><button onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1))} className="p-3 text-slate-400 hover:text-[#3d0413] transition-colors"><ChevronLeft size={20}/></button><div className="px-6 py-3 text-sm font-black text-[#3d0413] uppercase tracking-widest min-w-[180px] text-center">{viewDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</div><button onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1))} className="p-3 text-slate-400 hover:text-[#3d0413] transition-colors"><ChevronRight size={20}/></button></div>
-       </header>
-       <div className="bg-white rounded-[3.5rem] border border-slate-100 shadow-xl overflow-hidden">
-          <div className="grid grid-cols-7 border-b border-slate-50 bg-slate-50/30">{['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(d => <div key={d} className="py-6 text-center text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">{d}</div>)}</div>
-          <div className="grid grid-cols-7 divide-x divide-y divide-slate-50">
-             {(() => {
-                const year = viewDate.getFullYear(); const month = viewDate.getMonth();
-                const firstDay = new Date(year, month, 1).getDay(); const lastDate = new Date(year, month + 1, 0).getDate();
-                const cells = [];
-                for(let i = 0; i < firstDay; i++) cells.push(<div key={`p-${i}`} className="h-32 p-4 bg-slate-50/20 text-slate-200 font-black text-xs"></div>);
-                for(let d = 1; d <= lastDate; d++) {
-                  const dateObj = new Date(year, month, d);
-                  const dayName = daysOfWeek[dateObj.getDay()];
-                  const daySlots = timetableData[dayName]?.slots || [];
-                  
-                  // Helper to jump to a class portal from the calendar
-                  const navigateToTimetable = () => {
-                    if (daySlots.length > 0) {
-                      const firstSlot = daySlots[0];
-                      const targetClass = myPhysicalClasses.find(c => c.id === firstSlot.classId) || myPhysicalClasses[0];
-                      setSelectedPhysicalClass(targetClass);
-                      setSubPortal('TIMETABLE');
-                      setCurrentView('PHYSICAL_CLASS_DETAIL');
-                    } else if (myPhysicalClasses.length > 0) {
-                      // If no sessions, go to first class timetable anyway to add one
-                      setSelectedPhysicalClass(myPhysicalClasses[0]);
-                      setSubPortal('TIMETABLE');
-                      setCurrentView('PHYSICAL_CLASS_DETAIL');
-                    }
-                  };
-
-                  cells.push(
-                    <div key={d} onClick={navigateToTimetable} className="h-32 p-6 transition-all hover:bg-slate-50/50 cursor-pointer overflow-hidden group">
-                       <div className="flex justify-between items-start mb-2">
-                          <span className="text-lg font-black leading-none text-slate-900">{d}</span>
-                          {daySlots.length > 0 && <span className="text-[7px] font-black bg-rose-50 text-[#3d0413] px-1.5 py-0.5 rounded-md border border-rose-100">{daySlots.length} SESSION{daySlots.length > 1 ? 'S' : ''}</span>}
-                       </div>
-                       <div className="space-y-1">
-                          {daySlots.slice(0, 2).map(s => (
-                            <div key={s.id} className="text-[8px] font-black uppercase text-slate-400 truncate bg-slate-50 p-1 rounded-md border border-slate-100 group-hover:border-[#3d0413]/20 group-hover:bg-white transition-all">
-                               {s.time} • {s.className}
-                            </div>
-                          ))}
-                          {daySlots.length > 2 && <div className="text-[7px] font-black text-[#3d0413] pl-1">+{daySlots.length - 2} more...</div>}
-                       </div>
-                    </div>
-                  );
-                }
-                return cells;
-             })()}
+        <div className="bg-white p-14 rounded-[4.5rem] border border-slate-100 shadow-xl flex items-center justify-between">
+           <div>
+             <h3 className="text-4xl font-black text-slate-900 uppercase tracking-tighter mb-2">{selectedOnlineClass?.title}</h3>
+             <p className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] flex items-center gap-4">
+               <span className="text-rose-600 font-black">{selectedOnlineClass?.platform}</span> • {selectedOnlineClass?.code}
+             </p>
+           </div>
+           <a href={selectedOnlineClass?.link} target="_blank" rel="noopener noreferrer" className="px-12 py-6 bg-[#3d0413] text-white rounded-[2rem] text-[10px] font-black uppercase tracking-widest shadow-2xl active:scale-95 transition-all flex items-center gap-4 border-b-6 border-black"><ExternalLink size={20} /> Open Platform Node</a>
+        </div>
+      </div>
+      <div className="space-y-12">
+        <div className="bg-slate-50 border border-slate-100 p-10 rounded-[4rem] flex items-center justify-between">
+          <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Active Peers</p><p className="text-5xl font-black text-slate-900">{selectedOnlineClass?.students}</p></div>
+          <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center text-[#3d0413] shadow-sm"><Users size={32} /></div>
+        </div>
+        <div className="bg-white rounded-[4rem] border border-slate-100 shadow-2xl p-10 flex flex-col h-[500px]">
+          <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] mb-8 flex items-center gap-3"><MessageSquare size={16} /> Session Intelligence Chat</h3>
+          <div className="flex-1 overflow-y-auto space-y-6 mb-8 pr-4 scrollbar-hide">
+            <div className="bg-slate-50 p-6 rounded-[2rem] rounded-tl-none border border-slate-100 max-w-[85%]"><p className="text-[9px] font-black text-[#3d0413] uppercase tracking-widest mb-2">System Registry</p><p className="text-xs font-medium text-slate-600 leading-relaxed">Institutional Security Node Verified. All sessions cataloged.</p></div>
           </div>
-       </div>
-    </div>
-  );
-
-  /**
-   * Student Attendance History View (Calendar Page)
-   * SYNCED WITH CLASS SCHEDULE MATRIX & ATTENDANCE LAB
-   */
-  const StudentHistoryView = (
-    <div className="max-w-7xl mx-auto py-12 px-6 space-y-12 animate-in fade-in duration-500 pb-20">
-       <header className="flex items-center justify-between gap-6">
-          <div className="flex items-center gap-6">
-             <button onClick={() => { setCurrentView('PHYSICAL_CLASS_DETAIL'); setSubPortal('ATTENDANCE'); }} className="p-3 bg-white border border-slate-100 rounded-2xl text-slate-400 shadow-sm transition-transform active:scale-95"><ArrowLeft size={24} /></button>
-             <div>
-                <h2 className="text-4xl font-black text-slate-900 uppercase tracking-tight">Attendance Node Registry</h2>
-                <div className="flex items-center gap-3 mt-2">
-                   <div className="w-10 h-10 bg-[#3d0413] text-white rounded-xl flex items-center justify-center font-black">{selectedStudentForHistory?.name.charAt(0)}</div>
-                   <div>
-                      <p className="text-xs font-black text-slate-800 uppercase tracking-tight leading-none">{selectedStudentForHistory?.name}</p>
-                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">UNIT: {selectedPhysicalClass?.code} • {selectedPhysicalClass?.title}</p>
-                   </div>
-                </div>
-             </div>
-          </div>
-          <div className="flex bg-white p-2 rounded-2xl shadow-sm border border-slate-100">
-             <button onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() - 1, 1))} className="p-3 text-slate-400 hover:text-[#3d0413] transition-colors"><ChevronLeft size={20}/></button>
-             <div className="px-6 py-3 text-sm font-black text-[#3d0413] uppercase tracking-widest min-w-[180px] text-center">{viewDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</div>
-             <button onClick={() => setViewDate(new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 1))} className="p-3 text-slate-400 hover:text-[#3d0413] transition-colors"><ChevronRight size={20}/></button>
-          </div>
-       </header>
-
-       <div className="grid grid-cols-1 lg:grid-cols-4 gap-10">
-          <div className="lg:col-span-3">
-             <div className="bg-white rounded-[3.5rem] border border-slate-100 shadow-xl overflow-hidden">
-                <div className="grid grid-cols-7 border-b border-slate-50 bg-slate-50/30">
-                   {['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'].map(d => <div key={d} className="py-6 text-center text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">{d}</div>)}
-                </div>
-                <div className="grid grid-cols-7 divide-x divide-y divide-slate-50">
-                   {(() => {
-                      const year = viewDate.getFullYear(); const month = viewDate.getMonth();
-                      const firstDay = new Date(year, month, 1).getDay(); const lastDate = new Date(year, month + 1, 0).getDate();
-                      const cells = [];
-                      for(let i = 0; i < firstDay; i++) cells.push(<div key={`empty-${i}`} className="h-28 bg-slate-50/20"></div>);
-                      for(let d = 1; d <= lastDate; d++) {
-                        const dateObj = new Date(year, month, d);
-                        const dayName = daysOfWeek[dateObj.getDay()];
-                        
-                        // SYNC LOGIC: Check if this class has a scheduled session on this day of the week
-                        const hasScheduledSession = timetableData[dayName]?.slots.some(s => s.classId === selectedPhysicalClass?.id);
-                        
-                        // Determine past/present status
-                        const isPast = dateObj < new Date(new Date().setHours(0,0,0,0));
-                        const isToday = dateObj.toDateString() === new Date().toDateString();
-                        
-                        let status: 'present' | 'absent' | 'none' = 'none';
-                        
-                        // IF TODAY: Use the live registry state
-                        if (isToday && hasScheduledSession && selectedStudentForHistory) {
-                           status = attendanceState[selectedStudentForHistory.id] || 'none';
-                        } 
-                        // IF PAST: Use simulated history
-                        else if (hasScheduledSession && isPast) {
-                           status = (d % 9 === 0) ? 'absent' : 'present';
-                        }
-                        
-                        cells.push(
-                          <div 
-                            key={`day-${d}`} 
-                            onClick={() => {
-                                if (hasScheduledSession && (isPast || isToday)) {
-                                    setSelectedHistoricalDate(dateObj);
-                                    setIsFromStorage(false); // Coming from history view
-                                    setCurrentView('HISTORICAL_ATTENDANCE');
-                                }
-                            }}
-                            className={`h-28 p-4 transition-all relative overflow-hidden group ${!hasScheduledSession ? 'bg-slate-50/10' : 'hover:bg-slate-50/50 cursor-pointer'}`}
-                          >
-                             <div className="flex justify-between items-start">
-                                <span className={`text-sm font-black transition-colors ${hasScheduledSession ? 'text-[#3d0413]' : 'text-slate-300'}`}>{d}</span>
-                                {hasScheduledSession && (isPast || isToday) && (
-                                   <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                                      <ExternalLink size={12} className="text-[#3d0413]" />
-                                   </div>
-                                )}
-                             </div>
-                             
-                             <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-20 group-hover:opacity-40 transition-opacity">
-                                {status === 'present' && <CheckCircle2 size={48} className="text-emerald-500" />}
-                                {status === 'absent' && <XCircle size={48} className="text-rose-500" />}
-                             </div>
-                             
-                             <div className="mt-2 relative z-10">
-                                {status === 'present' && (
-                                    <div className="px-2 py-1.5 bg-emerald-50 text-emerald-600 rounded-md text-[8px] font-black uppercase border border-emerald-100 text-center animate-in zoom-in duration-300">
-                                        CLASS ATTENDED
-                                    </div>
-                                )}
-                                {status === 'absent' && (
-                                    <div className="px-2 py-1.5 bg-rose-50 text-rose-600 rounded-md text-[8px] font-black uppercase border border-rose-100 text-center animate-in zoom-in duration-300">
-                                        ABSENT
-                                    </div>
-                                )}
-                                {!hasScheduledSession && (
-                                    <div className="mt-1 px-2 py-1 text-slate-300 text-[7px] font-black uppercase tracking-widest text-center italic opacity-40">
-                                        NO SESSION
-                                    </div>
-                                )}
-                                {hasScheduledSession && status === 'none' && (
-                                    <div className="mt-1 px-2 py-1 bg-slate-50 text-slate-400 rounded-md text-[7px] font-black uppercase border border-slate-100 text-center">
-                                        {isPast || isToday ? 'AWAITING REGISTRY' : 'PENDING SYNC'}
-                                    </div>
-                                )}
-                             </div>
-                          </div>
-                        );
-                      }
-                      return cells;
-                   })()}
-                </div>
-             </div>
-          </div>
-          <div className="space-y-8">
-             <div className="bg-[#3d0413] rounded-[2.5rem] p-10 text-white shadow-2xl relative overflow-hidden group">
-                <div className="absolute -top-12 -right-12 w-40 h-40 bg-white/5 rounded-full blur-3xl group-hover:bg-white/10 transition-all"></div>
-                <p className="text-[10px] font-black uppercase tracking-[0.4em] mb-6 opacity-60">UNIT COMPLIANCE</p>
-                <div className="space-y-6 relative z-10">
-                   <div>
-                      <h4 className="text-5xl font-black tracking-tighter">
-                         {selectedStudentForHistory?.admNo.includes('001') ? '98%' : '94%'}
-                      </h4>
-                      <p className="text-[9px] font-bold text-rose-300 uppercase tracking-widest mt-1">Institutional Node Sync Rate</p>
-                   </div>
-                   <div className="grid grid-cols-2 gap-4">
-                      <div className="p-4 bg-white/10 rounded-2xl border border-white/10">
-                         <h5 className="text-2xl font-black">18</h5>
-                         <p className="text-[7px] font-black uppercase text-rose-200">Total Classes</p>
-                      </div>
-                      <div className="p-4 bg-white/10 rounded-2xl border border-white/10">
-                         <h5 className="text-2xl font-black">01</h5>
-                         <p className="text-[7px] font-black uppercase text-rose-200">Missed</p>
-                      </div>
-                   </div>
-                </div>
-             </div>
-             <div className="bg-white border-2 border-slate-100 rounded-[2.5rem] p-8 shadow-sm">
-                <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400 mb-6">PROTOCOL LEGEND</h4>
-                <div className="space-y-4">
-                   <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-500 flex items-center justify-center border border-emerald-100 shadow-sm"><CheckCircle2 size={16}/></div>
-                      <span className="text-[10px] font-black uppercase text-slate-600 tracking-widest leading-none">CLASS ATTENDED</span>
-                   </div>
-                   <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-rose-50 text-rose-500 flex items-center justify-center border border-rose-100 shadow-sm"><XCircle size={16}/></div>
-                      <span className="text-[10px] font-black uppercase text-slate-600 tracking-widest leading-none">ABSENT</span>
-                   </div>
-                   <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-slate-50 text-slate-200 flex items-center justify-center border border-slate-100"><Clock size={16}/></div>
-                      <span className="text-[10px] font-black uppercase text-slate-400 tracking-widest leading-none">NO SCHEDULED CLASS</span>
-                   </div>
-                </div>
-             </div>
-             <div className="p-8 bg-[#3d0413]/5 rounded-[2.5rem] border border-[#3d0413]/10">
-                <p className="text-[9px] font-black text-[#3d0413] uppercase tracking-widest leading-relaxed">
-                   Tip: Click any past session node (highlighted) to view the full unit registry portal for that day.
-                </p>
-             </div>
-          </div>
-       </div>
-    </div>
-  );
-
-  /**
-   * Historical Attendance Portal View
-   * Refined to match Screenshot EXACTLY and follow removal instructions.
-   */
-  const HistoricalAttendancePortal = (
-    <div className="max-w-7xl mx-auto py-12 px-6 space-y-12 animate-in fade-in duration-500 pb-20">
-       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-          <div className="flex items-center gap-6">
-             <button 
-              onClick={() => {
-                if (isFromStorage) {
-                  setCurrentView('PHYSICAL_CLASS_DETAIL');
-                  setSubPortal('RESOURCES');
-                  setIsFromStorage(false);
-                } else {
-                  setCurrentView('STUDENT_HISTORY');
-                }
-              }} 
-              className="p-3 bg-white border border-slate-100 rounded-2xl text-slate-400 shadow-sm transition-transform active:scale-95 hover:text-[#3d0413]"
-             >
-              <ArrowLeft size={24} />
-             </button>
-             <div>
-                <h2 className="text-4xl font-black text-[#1a202c] uppercase tracking-tighter">HISTORICAL PORTAL</h2>
-                <div className="flex items-center gap-3 mt-1.5">
-                   <div className="px-3 py-1 bg-[#1a0409] text-white rounded-md text-[9px] font-black uppercase tracking-widest shadow-sm">
-                      {selectedHistoricalDate?.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).toUpperCase()}
-                   </div>
-                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em]">UNIT REGISTRY AUDIT</p>
-                </div>
-             </div>
-          </div>
-          <div className="flex gap-4">
-             <button 
-               onClick={handleExportPdf}
-               disabled={isExportingPdf}
-               className="px-10 py-5 bg-white border border-slate-100 text-[#1a0409] rounded-2xl font-black uppercase text-[10px] tracking-widest flex items-center gap-3 shadow-sm hover:shadow-xl transition-all disabled:opacity-50"
-             >
-                {isExportingPdf ? <Loader2 className="animate-spin" size={18} /> : <FileText size={18}/>} 
-                {isExportingPdf ? 'GENERATING PDF...' : 'EXPORT AUDIT LOG'}
-             </button>
-             <button className="px-10 py-5 bg-white border border-slate-100 text-[#1a0409] rounded-2xl font-black uppercase text-[10px] tracking-widest flex items-center gap-3 shadow-sm group">
-                <Edit3 size={18} className="group-hover:text-rose-900 transition-colors" /> CORRECTION MODE
-             </button>
-          </div>
-       </header>
-
-       <div ref={historicalPortalRef} className="bg-white rounded-[3.5rem] border border-slate-100 shadow-2xl overflow-hidden relative">
-          <div className="bg-[#3d0413] px-12 py-10 flex justify-between items-center text-white">
-             <div>
-                <h4 className="text-3xl font-black uppercase tracking-tight leading-none mb-2">{selectedPhysicalClass?.title || 'REGISTRY AUDIT'}</h4>
-                <p className="text-[10px] font-bold text-rose-300/70 uppercase tracking-[0.2em]">VENUE: {selectedPhysicalClass?.room || 'MAIN CAMPUS'} • REGISTRY NODE SNAPSHOT</p>
-             </div>
-             <div className="flex items-center gap-4">
-                <h3 className="text-2xl font-black uppercase tracking-tighter opacity-90">
-                   {selectedHistoricalDate?.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()}
-                </h3>
-             </div>
-          </div>
-          
-          <table className="w-full text-left">
-             <thead className="bg-slate-50 border-b border-slate-100">
-                <tr className="divide-x divide-slate-100">
-                   <th className="px-12 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.4em]">STUDENT NODE</th>
-                   <th className="px-12 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.4em]">ADM NO</th>
-                   <th className="px-12 py-8 text-[11px] font-black uppercase text-slate-500 tracking-[0.4em] text-center">HISTORICAL STATUS</th>
-                </tr>
-             </thead>
-             <tbody className="divide-y divide-slate-50">
-                {students.map(std => {
-                   // Historical simulation logic matching screenshot
-                   const isAbsent = std.name.includes('Mary');
-                   return (
-                     <tr key={std.id} className="transition-all duration-300 divide-x divide-slate-50 hover:bg-slate-50/50">
-                        <td className="px-12 py-7">
-                           <div className="flex items-center gap-6">
-                              <div className={`w-12 h-12 rounded-xl flex items-center justify-center font-black text-base shadow-sm ${isAbsent ? 'bg-rose-50 text-rose-600' : 'bg-emerald-50 text-emerald-600'}`}>{std.name.charAt(0)}</div>
-                              <span className="text-[14px] font-black uppercase text-slate-900 tracking-tight">{std.name}</span>
-                           </div>
-                        </td>
-                        <td className="px-12 py-7 text-[12px] font-black text-slate-400 uppercase tracking-widest">{std.admNo}</td>
-                        <td className="px-12 py-7">
-                           <div className="flex justify-center">
-                              {isAbsent ? (
-                                <div className="px-6 py-3 bg-rose-50 text-rose-600 rounded-full text-[10px] font-black uppercase border border-rose-100 flex items-center gap-2 shadow-sm">
-                                   <XCircle size={16}/> ABSENT
-                                </div>
-                              ) : (
-                                <div className="px-6 py-3 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-black uppercase border border-emerald-100 flex items-center gap-2 shadow-sm">
-                                   <CheckCircle2 size={16}/> CLASS ATTENDED
-                                </div>
-                              )}
-                           </div>
-                        </td>
-                     </tr>
-                   );
-                })}
-             </tbody>
-          </table>
-       </div>
+          <div className="relative"><input type="text" placeholder="Broadcast to peers..." className="w-full pl-8 pr-20 py-5 bg-slate-50 border border-slate-200 rounded-[1.5rem] text-sm font-bold outline-none" /><button className="absolute right-3 top-3 bottom-3 px-6 bg-[#3d0413] text-white rounded-xl shadow-xl active:scale-90 transition-all"><Send size={18} /></button></div>
+        </div>
+      </div>
     </div>
   );
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 w-full overflow-x-hidden selection:bg-rose-950 selection:text-white">
-      {currentView === 'HOME' && HomeView}
-      {currentView === 'PHYSICAL_CLASSES_OVERVIEW' && PhysicalClassesOverview}
-      {currentView === 'PHYSICAL_CLASS_DETAIL' && PhysicalClassDashboardDetail}
-      {currentView === 'SCHOOL_CALENDAR' && SchoolCalendarView}
-      {currentView === 'STUDENT_HISTORY' && StudentHistoryView}
-      {currentView === 'HISTORICAL_ATTENDANCE' && HistoricalAttendancePortal}
-      {currentView === 'GLOBAL_STUDENT_ROSTER' && (
-        <div className="max-w-7xl mx-auto py-12 px-6 space-y-12 animate-in slide-in-from-right-4 duration-500 pb-20">
-           <header className="flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-              <div className="flex items-center gap-6">
-                 <button 
-                  onClick={() => {
-                    setCurrentView('PHYSICAL_CLASSES_OVERVIEW');
-                    if (returnToModal) {
-                      setIsAddClassModalOpen(true);
-                      setReturnToModal(false);
-                    }
-                  }} 
-                  className="p-3 bg-white border border-slate-100 rounded-2xl text-slate-400 shadow-sm transition-transform active:scale-95 hover:text-[#3d0413]"
-                 >
-                    <ArrowLeft size={24} />
-                 </button>
-                 <div>
-                    <h2 className="text-4xl font-black text-slate-900 uppercase tracking-tight">Institutional Student Roster</h2>
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-[0.3em] mt-2">Unified Node Management</p>
-                 </div>
-              </div>
-              <button onClick={() => setIsAddingStudent(true)} className="px-8 py-4 border-2 border-[#3d0413] text-[#3d0413] rounded-lg font-black uppercase text-[12px] tracking-widest hover:bg-[#3d0413] hover:text-white transition-all shadow-sm">ADD NEW STUDENT</button>
-           </header>
-           {isAddingStudent && StudentAddForm}
-           <div className="bg-white border-2 border-rose-900/10 rounded-[3rem] shadow-sm overflow-hidden">
-              <table className="w-full text-left">
-                 <thead className="bg-rose-50/20 border-b border-rose-900/10">
-                    <tr className="divide-x divide-rose-900/10">
-                       <th className="px-8 py-6 text-[10px] font-black uppercase text-[#3d0413] tracking-[0.3em]">STUDENT NODE</th>
-                       <th className="px-8 py-6 text-[10px] font-black uppercase text-[#3d0413] tracking-[0.3em]">ADM NO</th>
-                       <th className="px-8 py-6 text-[10px] font-black uppercase text-[#3d0413] tracking-[0.3em]">PHONE</th>
-                       <th className="px-8 py-6 text-[10px] font-black uppercase text-[#3d0413] tracking-[0.3em]">REGISTRY HISTORY</th>
-                       <th className="px-8 py-6 text-[10px] font-black uppercase text-[#3d0413] tracking-[0.3em] text-center">ACTION</th>
-                    </tr>
-                 </thead>
-                 <tbody className="divide-y divide-rose-900/10">
-                    {students.map(std => (
-                      <tr key={std.id} className="transition-all duration-300 divide-x divide-rose-900/10 hover:bg-rose-50/10 group cursor-pointer">
-                         <td className="px-8 py-6"><div className="flex items-center gap-4"><div className="w-12 h-12 rounded-2xl bg-slate-100 text-[#3d0413] flex items-center justify-center font-black">{std.name.charAt(0)}</div><span className="text-[12px] font-black uppercase text-slate-800">{std.name}</span></div></td>
-                         <td className="px-8 py-6 text-[11px] font-black text-slate-400 tracking-widest uppercase">{std.admNo}</td>
-                         <td className="px-8 py-6 text-[11px] font-black text-slate-500 uppercase">{std.phone}</td>
-                         <td className="px-8 py-6"><span className="px-3 py-1 bg-emerald-50 text-emerald-600 rounded-lg text-[9px] font-black uppercase border border-emerald-100">{std.history}</span></td>
-                         <td className="px-8 py-6 text-center">
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); handleDeleteStudent(std.id); }}
-                              className="p-3 text-rose-600 hover:bg-rose-50 rounded-xl transition-all shadow-sm active:scale-90"
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                         </td>
-                      </tr>
-                    ))}
-                 </tbody>
-              </table>
-           </div>
-        </div>
-      )}
-      
-      {currentView === 'ONLINE_CLASSES' && (
-         <div className="max-w-6xl mx-auto space-y-10 py-10 px-6 animate-in fade-in duration-500">
-           <div className="flex items-center gap-6"><button onClick={() => setCurrentView('HOME')} className="p-3 bg-white border border-slate-100 rounded-2xl text-slate-400 shadow-sm transition-transform active:scale-95"><ArrowLeft size={24} /></button><h2 className="text-3xl font-black text-slate-900 uppercase tracking-tight">Virtual Hubs</h2></div>
-           <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-             {[{ id: 'oc1', code: 'ICT 101', title: 'PROGRAMMING BASICS', platform: 'Virtual Lab' }].map(cls => (
-               <div key={cls.id} className="bg-white rounded-[2.5rem] border border-slate-200 p-8 shadow-sm hover:shadow-xl transition-all">
-                 <h3 className="text-xl font-black text-slate-900 mb-6 uppercase leading-tight">{cls.title}</h3>
-                 <button onClick={() => { setSelectedOnlineClass(cls); setCurrentView('ONLINE_CLASS_DETAIL'); }} className="w-full py-4 bg-[#3d0413] text-white rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-lg active:scale-95 transition-all">Connect Hub</button>
-               </div>
-             ))}
-           </div>
-         </div>
-      )}
-
-      {currentView === 'ONLINE_CLASS_DETAIL' && (
-        <div className="max-w-7xl mx-auto py-10 px-6 space-y-8 animate-in fade-in duration-500">
-           <header className="flex items-center gap-6"><button onClick={() => setCurrentView('ONLINE_CLASSES')} className="p-3 bg-white border border-slate-100 rounded-2xl text-slate-400 shadow-sm"><ArrowLeft size={24} /></button><h2 className="text-3xl font-black text-slate-900 uppercase tracking-tight">{selectedOnlineClass?.code} Portal</h2></header>
-           <div className="aspect-video bg-slate-950 rounded-[3rem] overflow-hidden relative shadow-2xl border-4 border-white/5 group">
-              {isCameraActive ? <video ref={videoRefCallback} className="w-full h-full object-cover" autoPlay playsInline muted /> : <div className="absolute inset-0 flex flex-col items-center justify-center text-white/10"><MonitorPlay size={64} className="mb-4" /><p className="font-black uppercase tracking-widest text-[10px]">Transmission Offline</p></div>}
-              <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-4 bg-black/40 backdrop-blur-xl p-4 rounded-3xl border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity">
-                 <button onClick={toggleCamera} className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-all ${isCameraActive ? 'bg-rose-50 text-white shadow-lg' : 'bg-white/10 text-white hover:bg-white/20'}`}><VideoIcon size={20}/></button>
-                 <button className="w-12 h-12 rounded-2xl flex items-center justify-center bg-white/10 text-white hover:bg-white/20 transition-all"><Mic size={20}/></button>
-              </div>
-           </div>
-        </div>
-      )}
-
-      {isAiPanelOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-end">
-          <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm" onClick={() => setIsAiPanelOpen(false)}></div>
-          <div className="relative w-full max-w-2xl h-full bg-white shadow-[-50px_0_100px_-20px_rgba(0,0,0,0.3)] animate-in slide-in-from-right duration-500 flex flex-col">
-            <header className="p-10 border-b border-slate-100 flex items-center justify-between"><h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">AI Command Intelligence</h3><button onClick={() => setIsAiPanelOpen(false)} className="p-3 text-slate-400 hover:text-rose-950 transition-colors"><X size={24}/></button></header>
-            <div className="flex-1 overflow-y-auto p-10 space-y-10">
-              {aiResponse ? (
-                <div className="animate-in fade-in duration-700">
-                  <div className="p-8 bg-slate-50 rounded-[2.5rem] border border-slate-100 text-sm font-medium text-slate-700">{aiResponse.text}</div>
-                </div>
-              ) : <div className="h-full flex flex-col items-center justify-center text-center opacity-30"><Search size={48} className="mb-4" /><p className="font-black uppercase tracking-widest text-[10px]">Awaiting query...</p></div>}
-            </div>
-            <div className="p-10 bg-slate-50 border-t border-slate-100">
-              <form onSubmit={handleAiResearch} className="relative">
-                <input type="text" value={aiQuery} onChange={(e) => setAiQuery(e.target.value)} placeholder="Input query..." className="w-full pl-10 pr-20 py-6 bg-white border border-slate-200 rounded-[2rem] outline-none font-bold text-sm shadow-xl" />
-                <button type="submit" className="absolute right-4 top-4 bottom-4 w-14 bg-[#3d0413] text-white rounded-2xl flex items-center justify-center shadow-lg transition-transform">{isAiLoading ? <RefreshCw className="animate-spin" size={20}/> : <SendHorizonal size={20}/>}</button>
-              </form>
+    <div className="min-h-screen bg-white relative overflow-hidden">
+      <div className="absolute top-0 right-0 w-[60rem] h-[60rem] bg-rose-50/40 rounded-full blur-[100px] -mr-[20rem] -mt-[20rem] pointer-events-none z-0 animate-pulse duration-[5000ms]"></div>
+      <div className="max-w-[1600px] mx-auto p-12 lg:p-20 relative z-10">
+        {notification && (
+          <div className="fixed top-24 right-12 z-[1000] animate-in slide-in-from-right-8">
+            <div className={`px-12 py-6 rounded-3xl shadow-2xl border-l-8 flex items-center gap-8 ${notification.type === 'success' ? 'bg-white border-emerald-500 text-slate-900' : 'bg-[#3d0413] border-rose-400 text-white'}`}>
+              {notification.type === 'success' ? <CheckCircle2 className="text-emerald-500" size={36} /> : <Info className="text-rose-400" size={36} />}
+              <p className="text-base font-black uppercase tracking-[0.1em]">{notification.msg}</p>
             </div>
           </div>
+        )}
+
+        {currentView === 'HOME' && (
+          <div className="space-y-24 animate-in fade-in duration-1000">
+            <div className="flex flex-col items-center text-center max-w-5xl mx-auto space-y-4">
+               <div className="flex items-center gap-4 mb-4">
+                  <button 
+                    onClick={() => { setCalendarAction('OPENING'); setIsCalendarModalOpen(true); }}
+                    className="px-6 py-2.5 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-full text-[9px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-emerald-100 transition shadow-sm"
+                  >
+                    <DoorOpen size={14} /> Open School Node
+                  </button>
+                  <button 
+                    onClick={() => { setCalendarAction('CLOSING'); setIsCalendarModalOpen(true); }}
+                    className="px-6 py-2.5 bg-rose-50 border border-rose-200 text-rose-800 rounded-full text-[9px] font-black uppercase tracking-widest flex items-center gap-2 hover:bg-rose-100 transition shadow-sm"
+                  >
+                    <Power size={14} /> Close School Node
+                  </button>
+               </div>
+               <div className="px-6 py-2 bg-[#3d0413]/5 rounded-full border border-[#3d0413]/10 flex items-center gap-3 mb-4">
+                  <ShieldCheck size={14} className="text-[#3d0413]" />
+                  <span className="text-[10px] font-black uppercase tracking-[0.5em] text-[#3d0413]/70">Secure Institutional Gateway Authorized</span>
+               </div>
+               <h1 className="text-5xl md:text-7xl font-black text-[#1a202c] uppercase tracking-tighter leading-[0.8]">
+                 WELCOME <br />
+                 <span className="text-transparent bg-clip-text bg-gradient-to-br from-[#3d0413] via-[#800] to-rose-700">{user.name}</span>
+               </h1>
+               <div className="flex items-center gap-6 mt-4">
+                 <p className="text-slate-400 font-black uppercase tracking-[0.6em] text-[10px] leading-loose opacity-70">SELECT MODULE</p>
+                 <div className="h-px w-12 bg-slate-200"></div>
+                 <span className="text-[10px] font-black text-[#3d0413] uppercase tracking-[0.3em]">Term {academicConfig.term} • {academicConfig.status}</span>
+               </div>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-16 max-w-[1300px] mx-auto px-4 pb-20">
+              {physicalClasses.map(c => (
+                <div key={c.id} onClick={() => { setSelectedPhysicalClass(c); setCurrentView('PHYSICAL_CLASS_DETAIL'); setActiveClassTab('REGISTER'); }} className="bg-[#f8f9fa] aspect-[4/5] rounded-[5rem] p-16 flex flex-col justify-between hover:shadow-[0_60px_100px_-30px_rgba(61,4,19,0.15)] transition-all duration-700 cursor-pointer group border border-slate-100 relative overflow-hidden active:scale-95">
+                  <div className="absolute top-8 right-8 flex gap-3 z-20 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                    <button onClick={(e) => handleOpenEdit(e, c)} className="w-12 h-12 rounded-full bg-white shadow-xl flex items-center justify-center text-slate-600 hover:text-[#3d0413] border border-slate-100"><Edit3 size={18} /></button>
+                    <button onClick={(e) => handleDeleteNode(e, c.id, 'PHYSICAL')} className="w-12 h-12 rounded-full bg-white shadow-xl flex items-center justify-center text-rose-600 border border-rose-100"><Trash2 size={18} /></button>
+                  </div>
+                  <div className="relative z-10 space-y-12">
+                    <div className="w-24 h-24 bg-white rounded-3xl flex items-center justify-center text-[#3d0413] shadow-lg border border-slate-50 group-hover:-rotate-12 transition-transform duration-500">
+                      <School size={48} strokeWidth={2.5} />
+                    </div>
+                    <div className="space-y-4">
+                      <h4 className="text-3xl font-black text-slate-900 uppercase tracking-tighter leading-[0.9] group-hover:text-[#3d0413] transition-colors">{c.title}</h4>
+                      <p className="text-sm font-black text-slate-400 uppercase tracking-widest">{c.room}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-slate-200/50 pt-12 relative z-10">
+                    <span className="text-[12px] font-black text-slate-900 uppercase tracking-[0.4em]">INITIALIZE REGISTRY</span>
+                    <div className="w-16 h-16 rounded-full bg-white flex items-center justify-center text-[#3d0413] shadow-lg group-hover:translate-x-4 transition-transform border border-slate-100">
+                      <ArrowRight size={28} strokeWidth={3} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {virtualClasses.map(v => (
+                <div key={v.id} onClick={() => { setSelectedOnlineClass(v); setCurrentView('ONLINE_CLASS_DETAIL'); }} className="bg-[#1a0208] aspect-[4/5] rounded-[5rem] p-16 flex flex-col justify-between hover:shadow-[0_60px_100px_-30px_rgba(225,29,72,0.3)] transition-all duration-700 cursor-pointer group border-b-[20px] border-black relative overflow-hidden active:scale-95 shadow-2xl">
+                  <div className="absolute top-8 right-8 flex gap-3 z-20 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                    <button onClick={(e) => handleOpenEdit(e, v)} className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-xl shadow-xl flex items-center justify-center text-white/80 border border-white/10"><Edit3 size={18} /></button>
+                    <button onClick={(e) => handleDeleteNode(e, v.id, 'ONLINE')} className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-xl shadow-xl flex items-center justify-center text-rose-400 border border-rose-900/50"><Trash2 size={18} /></button>
+                  </div>
+                  <div className="relative z-10 space-y-12">
+                    <div className="w-24 h-24 bg-white/10 backdrop-blur-3xl rounded-3xl flex items-center justify-center text-rose-400 shadow-2xl border border-white/20 group-hover:rotate-12 transition-transform duration-500">
+                      <Monitor size={48} strokeWidth={2.5} />
+                    </div>
+                    <div className="space-y-4">
+                      <h4 className="text-3xl font-black text-white uppercase tracking-tighter leading-[0.9] group-hover:text-rose-400 transition-colors">{v.title}</h4>
+                      <p className="text-sm font-black text-rose-300 uppercase tracking-widest">{v.platform}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between border-t border-white/10 pt-12 relative z-10">
+                    <span className="text-[12px] font-black text-white uppercase tracking-[0.4em]">JOIN DIGITAL NODE</span>
+                    <div className="w-16 h-16 rounded-full bg-white/10 backdrop-blur-xl flex items-center justify-center text-white shadow-lg group-hover:translate-x-4 transition-transform border border-white/20">
+                      <ArrowRight size={28} strokeWidth={3} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <button 
+                onClick={() => { setEditingNode(null); setProvisionType('PHYSICAL'); setIsCreateClassModalOpen(true); }} 
+                className="aspect-[4/5] bg-white border-4 border-dashed border-slate-200 rounded-[5rem] flex flex-col items-center justify-center gap-10 text-slate-300 hover:text-[#3d0413] hover:border-[#3d0413] hover:bg-[#3d0413]/5 transition-all duration-700 group active:scale-95 shadow-sm"
+              >
+                <div className="w-32 h-32 rounded-full border-4 border-dashed border-current flex items-center justify-center group-hover:scale-125 group-hover:border-solid transition-all">
+                  <Plus size={80} strokeWidth={3} className="group-hover:rotate-90 transition-transform" />
+                </div>
+                <span className="text-[14px] font-black uppercase tracking-[0.6em] block">ADD NEW CLASS</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {currentView === 'PHYSICAL_CLASS_DETAIL' && selectedPhysicalClass && (
+          <div className="animate-in fade-in slide-in-from-right-4 duration-700 space-y-12 pb-20 relative z-10">
+            <header className="bg-white p-14 rounded-[4.5rem] border border-slate-100 shadow-xl flex flex-col md:flex-row justify-between items-center gap-10">
+              <div className="flex items-center gap-10">
+                <button onClick={() => { setCurrentView('HOME'); setSelectedPhysicalClass(null); }} className="p-6 bg-slate-50 text-slate-400 hover:text-[#3d0413] rounded-3xl transition-all shadow-sm"><ArrowLeft size={32} strokeWidth={3} /></button>
+                <div>
+                  <h2 className="text-6xl font-black text-slate-900 uppercase tracking-tight leading-none">{selectedPhysicalClass.title}</h2>
+                  <p className="text-[12px] font-black text-slate-400 uppercase tracking-[0.5em] mt-5 flex items-center gap-4"><span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>{selectedPhysicalClass.department} • {selectedPhysicalClass.code}</p>
+                </div>
+              </div>
+              <div className="flex gap-2 bg-slate-50 p-3 rounded-[2.5rem] border border-slate-100 shadow-inner">
+                {['REGISTER', 'TIME TABLE', 'STUDENTS', 'MATERIALS'].map(tab => (
+                  <button key={tab} onClick={() => setActiveClassTab(tab as ClassTab)} className={`px-10 py-5 rounded-[1.5rem] text-[10px] font-black uppercase tracking-widest transition-all ${activeClassTab === tab ? 'bg-[#3d0413] text-white shadow-2xl' : 'text-slate-400 hover:text-slate-800'}`}>{tab}</button>
+                ))}
+              </div>
+            </header>
+            <div className="min-h-[500px]">
+              {activeClassTab === 'REGISTER' && renderRegister()}
+              {activeClassTab === 'TIME TABLE' && renderTimetable()}
+              {activeClassTab === 'STUDENTS' && renderStudents()}
+              {activeClassTab === 'MATERIALS' && renderMaterials()}
+            </div>
+          </div>
+        )}
+        {currentView === 'ONLINE_CLASS_DETAIL' && selectedOnlineClass && renderOnlineClassDetail()}
+      </div>
+
+      {/* CREATE / EDIT CLASS MODAL */}
+      {isCreateClassModalOpen && (
+        <div className="fixed inset-0 z-[600] flex items-center justify-center p-8">
+           <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl" onClick={() => { setIsCreateClassModalOpen(false); setEditingNode(null); }}></div>
+           <div className="relative w-full max-w-2xl bg-white rounded-[4rem] shadow-2xl overflow-hidden animate-in zoom-in">
+              <div className="bg-[#3d0413] p-14 flex justify-between items-center text-white">
+                <h3 className="text-5xl font-black uppercase tracking-tighter leading-none">{editingNode ? 'Edit Node' : 'Provision Node'}</h3>
+                <button onClick={() => { setIsCreateClassModalOpen(false); setEditingNode(null); }} className="p-5 bg-white/10 rounded-[1.5rem] hover:bg-white/20 transition-all"><X size={36}/></button>
+              </div>
+              <div className="p-14">
+                <form 
+                  ref={classFormRef}
+                  onSubmit={(e) => {
+                   e.preventDefault();
+                   const formData = new FormData(e.currentTarget as HTMLFormElement);
+                   const type = provisionType;
+                   const code = (formData.get('code') as string).toUpperCase();
+                   const title = (formData.get('title') as string).toUpperCase();
+                   const target = (formData.get('target') as string).toUpperCase();
+                   
+                   const submitter = (e.nativeEvent as any).submitter?.name;
+                   const destinationTab = submitter === 'STUDENTS' ? 'STUDENTS' : submitter === 'TIMETABLE' ? 'TIME TABLE' : 'REGISTER';
+
+                   let classToSelect: PhysicalClass | VirtualClass | null = null;
+
+                   if (editingNode) {
+                      if (type === 'PHYSICAL') {
+                        setPhysicalClasses(prev => prev.map(c => {
+                          if (c.id === editingNode.id) {
+                            const updated = { ...c, code, title, room: target, type: 'PHYSICAL' as const };
+                            classToSelect = updated;
+                            syncToGlobalRegistry(updated);
+                            return updated;
+                          }
+                          return c;
+                        }));
+                      } else {
+                        setVirtualClasses(prev => prev.map(c => {
+                          if (c.id === editingNode.id) {
+                            const updated = { ...c, code, title, platform: target, type: 'ONLINE' as const };
+                            classToSelect = updated;
+                            syncToGlobalRegistry(updated);
+                            return updated;
+                          }
+                          return c;
+                        }));
+                      }
+                      showToast("Academic Node Synchronized");
+                   } else {
+                      let newNode: any;
+                      if (type === 'PHYSICAL') {
+                        newNode = { id: `p-${Date.now()}`, code, title, room: target, studentCount: 0, type: 'PHYSICAL' as const, department: user.department || 'General', credits: 3, staff: user.name, schedule: [] };
+                        setPhysicalClasses(prev => [...prev, newNode]);
+                        classToSelect = newNode;
+                        syncToGlobalRegistry(newNode);
+                      } else {
+                        newNode = { id: `v-${Date.now()}`, code, title, platform: target, students: 0, link: '#', type: 'ONLINE' as const, startTime: '12:00 PM' };
+                        setVirtualClasses(prev => [...prev, newNode]);
+                        classToSelect = newNode;
+                        syncToGlobalRegistry(newNode);
+                      }
+                      showToast("Academic Node Provisioned");
+                   }
+
+                   if (submitter === 'STUDENTS' || submitter === 'TIMETABLE') {
+                      if (type === 'PHYSICAL' && classToSelect) {
+                        setSelectedPhysicalClass(classToSelect as PhysicalClass);
+                        setCurrentView('PHYSICAL_CLASS_DETAIL');
+                        setActiveClassTab(destinationTab as ClassTab);
+                      } else if (type === 'ONLINE' && classToSelect) {
+                        setSelectedOnlineClass(classToSelect as VirtualClass);
+                        setCurrentView('ONLINE_CLASS_DETAIL');
+                      }
+                   }
+                   setIsCreateClassModalOpen(false);
+                   setEditingNode(null);
+                 }} className="space-y-10">
+                    <div className="space-y-3">
+                      <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] px-3">Node Protocol</label>
+                      <div className="flex p-1.5 bg-slate-100 rounded-[1.8rem] border border-slate-200 shadow-inner">
+                        <button type="button" onClick={() => setProvisionType('PHYSICAL')} className={`flex-1 py-4 rounded-[1.2rem] font-black uppercase text-[10px] tracking-widest transition-all ${provisionType === 'PHYSICAL' ? 'bg-white text-[#3d0413] shadow-md' : 'text-slate-400'}`}>Physical Classroom</button>
+                        <button type="button" onClick={() => setProvisionType('ONLINE')} className={`flex-1 py-4 rounded-[1.2rem] font-black uppercase text-[10px] tracking-widest transition-all ${provisionType === 'ONLINE' ? 'bg-[#3d0413] text-white shadow-lg' : 'text-slate-400'}`}>Online Class</button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-10">
+                        <div className="space-y-3"><label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] px-3">Unit Code</label><input name="code" defaultValue={editingNode?.code} required type="text" placeholder="EE-402" className="w-full px-8 py-6 bg-slate-50 border border-slate-200 rounded-[1.5rem] font-black outline-none focus:ring-4 focus:ring-[#3d0413]/5" /></div>
+                        <div className="space-y-3"><label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] px-3">{provisionType === 'PHYSICAL' ? 'Venue' : 'Platform'}</label><input name="target" defaultValue={(editingNode as any)?.room || (editingNode as any)?.platform} required type="text" placeholder={provisionType === 'PHYSICAL' ? "Power Lab 2" : "MS Teams"} className="w-full px-8 py-6 bg-slate-50 border border-slate-200 rounded-[1.5rem] font-black outline-none focus:ring-4 focus:ring-[#3d0413]/5" /></div>
+                    </div>
+                    <div className="space-y-3"><label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] px-3">Unit Title</label><input name="title" defaultValue={editingNode?.title} required type="text" placeholder="Advanced Power Systems" className="w-full px-8 py-6 bg-slate-50 border border-slate-200 rounded-[1.5rem] font-black outline-none focus:ring-4 focus:ring-[#3d0413]/5" /></div>
+                    <div className="grid grid-cols-2 gap-6">
+                      <button type="submit" name="STUDENTS" className="py-6 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-[2rem] font-black uppercase text-[10px] tracking-widest shadow-sm hover:bg-emerald-100 transition-all flex items-center justify-center gap-3"><UserPlus size={16} /> Add Student</button>
+                      <button type="submit" name="TIMETABLE" className="py-6 bg-amber-50 text-amber-700 border border-amber-100 rounded-[2rem] font-black uppercase text-[10px] tracking-widest shadow-sm hover:bg-amber-100 transition-all flex items-center justify-center gap-3"><Clock size={16} /> Add Time Table</button>
+                    </div>
+                    <button type="submit" className="w-full py-7 bg-[#3d0413] text-white rounded-[2.5rem] font-black uppercase text-sm shadow-2xl active:scale-95 border-b-8 border-black transition-all hover:bg-black">{editingNode ? 'Authorize Changes' : 'Authorize Provisioning'}</button>
+                 </form>
+              </div>
+           </div>
         </div>
       )}
 
-      {/* MODALS SECTION */}
-
-      {/* Add Session Slot Modal */}
-      {isAddingSlot && (
-         <div className="fixed inset-0 z-[110] flex items-center justify-center p-6">
-            <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-md" onClick={() => setIsAddingSlot(false)}></div>
-            <div className="relative w-full max-w-lg bg-white rounded-[3.5rem] shadow-2xl p-12 overflow-hidden animate-in zoom-in duration-300">
-               <div className="absolute top-0 right-0 w-32 h-32 bg-rose-50 rounded-full blur-3xl -mr-16 -mt-16"></div>
-               <div className="flex items-center gap-4 mb-8">
-                  <div className="w-12 h-12 bg-rose-50 text-[#3d0413] rounded-2xl flex items-center justify-center shadow-sm"><Clock size={24}/></div>
-                  <h4 className="text-2xl font-black text-slate-900 uppercase tracking-tight">Add Session Slot</h4>
-               </div>
-               <form className="space-y-6" onSubmit={handleAddSlot}>
-                  <div className="space-y-2">
-                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Select Target Day</label>
-                     <div className="grid grid-cols-4 gap-2">
-                        {daysOfWeek.map(d => (
-                          <button 
-                            key={d} 
-                            type="button" 
-                            onClick={() => setActiveDay(d)}
-                            className={`py-2 text-[10px] font-black rounded-lg border transition-all ${activeDay === d ? 'bg-[#3d0413] text-white border-transparent' : 'bg-slate-50 text-slate-400 border-slate-200'}`}
-                          >
-                             {d.slice(0, 3)}
-                          </button>
-                        ))}
-                     </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Class Name</label>
-                        <input type="text" placeholder="E.G. MATH 101" required value={newSlotData.className} onChange={e => setNewSlotData({...newSlotData, className: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black outline-none focus:border-[#3d0413] transition-all" />
-                     </div>
-                     <div className="space-y-2">
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Venue / Room</label>
-                        <input type="text" placeholder="ROOM B2" required value={newSlotData.room} onChange={e => setNewSlotData({...newSlotData, room: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 text-sm font-black outline-none focus:border-[#3d0413] transition-all" />
-                     </div>
-                  </div>
-                  <div className="space-y-2">
-                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Start Time Configuration</label>
-                     <div className="flex items-center gap-4">
-                        <select value={selectedHour} onChange={e => setSelectedHour(e.target.value)} className="flex-1 bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 font-black text-lg text-center outline-none focus:border-[#3d0413]">
-                           {hours.map(h => <option key={h} value={h}>{h}</option>)}
-                        </select>
-                        <span className="font-black text-slate-300 text-2xl">:</span>
-                        <select value={selectedMinute} onChange={e => setSelectedMinute(e.target.value)} className="flex-1 bg-slate-50 border border-slate-200 rounded-2xl px-5 py-3.5 font-black text-lg text-center outline-none focus:border-[#3d0413]">
-                           {minutes.map(m => <option key={m} value={m}>{m}</option>)}
-                        </select>
-                     </div>
-                  </div>
-                  <div className="pt-6 flex gap-4">
-                     <button type="button" onClick={() => setIsAddingSlot(false)} className="flex-1 py-5 bg-slate-100 text-slate-500 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all">CANCEL</button>
-                     <button type="submit" className="flex-1 py-5 bg-[#3d0413] text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl hover:bg-black transition-all">COMMIT SLOT</button>
-                  </div>
-               </form>
-            </div>
-         </div>
-      )}
-
-      {/* Add Class Modal */}
-      {isAddClassModalOpen && (
-         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
-            <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-md" onClick={() => setIsAddClassModalOpen(false)}></div>
-            <div className="relative w-full max-w-lg bg-white rounded-[3.5rem] shadow-2xl p-12 overflow-hidden animate-in zoom-in duration-300">
-               <div className="absolute top-0 right-0 w-32 h-32 bg-rose-50 rounded-full blur-3xl -mr-16 -mt-16"></div>
-               <div className="flex items-center gap-4 mb-8"><div className="w-12 h-12 bg-rose-50 text-[#3d0413] rounded-2xl flex items-center justify-center shadow-sm"><PlusCircle size={24}/></div><h4 className="text-2xl font-black text-slate-900 uppercase tracking-tight">ADD NEW CLASS</h4></div>
-               <form className="space-y-6" onSubmit={handleAddClassSubmit}>
-                  <div className="space-y-1"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-2">CLASS TITLE / MODULE NAME</label><input type="text" placeholder="E.G. ADVANCED CALCULUS" value={newClass.title} onChange={(e) => setNewClass({...newClass, title: e.target.value})} required className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-slate-900 font-black text-sm outline-none focus:ring-4 focus:ring-[#3d0413]/5 focus:border-[#3d0413] transition-all" /></div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-2">UNIT CODE</label><input type="text" placeholder="EE-XXX" value={newClass.code} onChange={(e) => setNewClass({...newClass, code: e.target.value})} required className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-slate-900 font-black text-sm outline-none focus:ring-4 focus:ring-[#3d0413]/5 focus:border-[#3d0413] transition-all" /></div>
-                    <div className="space-y-1"><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-2">FACILITY / VENUE</label><input type="text" placeholder="ROOM NO / LAB" value={newClass.room} onChange={(e) => setNewClass({...newClass, room: e.target.value})} required className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-slate-900 font-black text-sm outline-none focus:ring-4 focus:ring-[#3d0413]/5 focus:border-[#3d0413] transition-all" /></div>
-                  </div>
-                  
-                  <div className="pt-2 flex flex-wrap gap-4">
-                    <button 
-                      type="button" 
-                      onClick={() => { 
-                        setIsAddClassModalOpen(false); 
-                        setReturnToModal(true); // Track source for back navigation
-                        setCurrentView('GLOBAL_STUDENT_ROSTER'); 
-                      }} 
-                      className="flex-1 py-3 px-4 border-2 border-[#3d0413] text-[#3d0413] rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-[#3d0413] hover:text-white transition-all"
-                    >
-                      ADD STUDENTS
+      {/* SESSION MODAL */}
+      {isSessionModalOpen && (
+        <div className="fixed inset-0 z-[650] flex items-center justify-center p-8">
+           <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-xl" onClick={() => { setIsSessionModalOpen(false); setEditingSession(null); }}></div>
+           <div className="relative w-full max-w-xl bg-white rounded-[4rem] shadow-2xl overflow-hidden animate-in zoom-in">
+              <div className="bg-[#3d0413] p-12 flex justify-between items-center text-white">
+                <h3 className="text-4xl font-black uppercase tracking-tighter leading-none">{editingSession ? 'Re-edit Session' : 'Add Session'}</h3>
+                <button onClick={() => { setIsSessionModalOpen(false); setEditingSession(null); }} className="p-4 bg-white/10 rounded-[1.5rem] hover:bg-white/20 transition-all"><X size={32}/></button>
+              </div>
+              <div className="p-12">
+                <form onSubmit={(e) => {
+                   e.preventDefault();
+                   if (!selectedPhysicalClass) return;
+                   const formData = new FormData(e.currentTarget as HTMLFormElement);
+                   const sessionData: ScheduleSession = {
+                      id: editingSession?.id || `s-${Date.now()}`,
+                      day: formData.get('day') as string,
+                      time: formData.get('time') as string,
+                      venue: (formData.get('venue') as string).toUpperCase(),
+                      type: formData.get('type') as 'LECTURE' | 'PRACTICAL' | 'SEMINAR',
+                   };
+                   const updatedSchedule = editingSession 
+                      ? selectedPhysicalClass.schedule.map(s => s.id === editingSession.id ? sessionData : s)
+                      : [...selectedPhysicalClass.schedule, sessionData];
+                   const updatedClass = { ...selectedPhysicalClass, schedule: updatedSchedule };
+                   setPhysicalClasses(prev => prev.map(c => c.id === selectedPhysicalClass.id ? updatedClass : c));
+                   setSelectedPhysicalClass(updatedClass);
+                   showToast(editingSession ? "Session Synchronized" : "Session Provisioned");
+                   setIsSessionModalOpen(false);
+                   setEditingSession(null);
+                 }} className="space-y-8">
+                    <div className="grid grid-cols-2 gap-8">
+                        <div className="space-y-2">
+                           <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] px-3">Weekday</label>
+                           <select name="day" defaultValue={editingSession?.day || 'MONDAY'} className="w-full px-8 py-5 bg-slate-50 border border-slate-200 rounded-[1.5rem] font-black outline-none appearance-none cursor-pointer">
+                              {['MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY'].map(d => <option key={d} value={d}>{d}</option>)}
+                           </select>
+                        </div>
+                        <div className="space-y-2">
+                           <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] px-3">Type</label>
+                           <select name="type" defaultValue={editingSession?.type || 'LECTURE'} className="w-full px-8 py-5 bg-slate-50 border border-slate-200 rounded-[1.5rem] font-black outline-none appearance-none cursor-pointer">
+                              <option value="LECTURE">LECTURE</option>
+                              <option value="PRACTICAL">PRACTICAL</option>
+                              <option value="SEMINAR">SEMINAR</option>
+                           </select>
+                        </div>
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] px-3">Time</label>
+                       <input name="time" defaultValue={editingSession?.time} required type="text" placeholder="08:00 AM - 11:00 AM" className="w-full px-8 py-5 bg-slate-50 border border-slate-200 rounded-[1.5rem] font-black outline-none" />
+                    </div>
+                    <div className="space-y-2">
+                       <label className="text-[11px] font-black text-slate-400 uppercase tracking-[0.4em] px-3">Venue</label>
+                       <input name="venue" defaultValue={editingSession?.venue} required type="text" placeholder="POWER LAB 2" className="w-full px-8 py-5 bg-slate-50 border border-slate-200 rounded-[1.5rem] font-black outline-none" />
+                    </div>
+                    <button type="submit" className="w-full py-6 bg-[#3d0413] text-white rounded-[2rem] font-black uppercase text-sm shadow-2xl active:scale-95 border-b-6 border-black">
+                       {editingSession ? 'Authorize Session Change' : 'Provision Session Node'}
                     </button>
-                    <button type="button" onClick={() => { 
-                      setIsAddClassModalOpen(false); 
-                      setReturnToModal(true); // Track source for back navigation
-                      if (myPhysicalClasses.length > 0) {
-                        setSelectedPhysicalClass(myPhysicalClasses[0]);
-                        setSubPortal('TIMETABLE');
-                        setCurrentView('PHYSICAL_CLASS_DETAIL');
-                      } else {
-                        setCurrentView('SCHOOL_CALENDAR');
-                      }
-                    }} className="flex-1 py-3 px-4 border-2 border-[#3d0413] text-[#3d0413] rounded-xl font-black uppercase text-[10px] tracking-widest hover:bg-[#3d0413] hover:text-white transition-all">ADD TO TIME TABLE</button>
-                  </div>
-
-                  <div className="pt-4 flex gap-4"><button type="button" onClick={() => setIsAddClassModalOpen(false)} className="flex-1 py-5 bg-slate-100 text-slate-500 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all">CANCEL</button><button type="submit" className="flex-1 py-5 bg-[#3d0413] text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl hover:bg-black transition-all">COMMIT CLASS</button></div>
-               </form>
-            </div>
-         </div>
-       )}
-
-       {isOpeningModalOpen && (
-         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
-            <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-md" onClick={() => setIsOpeningModalOpen(false)}></div>
-            <div className="relative w-full max-w-lg bg-white rounded-[3.5rem] shadow-2xl p-12 overflow-hidden animate-in zoom-in duration-300">
-               <div className="absolute top-0 right-0 w-32 h-32 bg-rose-50 rounded-full blur-3xl -mr-16 -mt-16"></div>
-               <div className="flex items-center gap-4 mb-8"><div className="w-12 h-12 bg-rose-50 text-[#3d0413] rounded-2xl flex items-center justify-center shadow-sm"><School size={24}/></div><h4 className="text-2xl font-black text-slate-900 uppercase tracking-tight">Register School Opening</h4></div>
-               <form className="space-y-8" onSubmit={(e) => { e.preventDefault(); setIsOpeningModalOpen(false); }}>
-                  <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Opening Date</label><input type="date" value={academicSchedule.openingDate} onChange={(e) => setAcademicSchedule({...academicSchedule, openingDate: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-slate-900 font-black text-lg outline-none focus:ring-4 focus:ring-[#3d0413]/5 focus:border-[#3d0413] transition-all" required /></div>
-                  <div className="pt-4 flex gap-4"><button type="button" onClick={() => setIsOpeningModalOpen(false)} className="flex-1 py-5 bg-slate-100 text-slate-500 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all">CANCEL</button><button type="submit" className="flex-1 py-5 bg-[#3d0413] text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl hover:bg-black transition-all">COMMIT OPENING</button></div>
-               </form>
-            </div>
-         </div>
-       )}
-
-       {isClosingModalOpen && (
-         <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
-            <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-md" onClick={() => setIsClosingModalOpen(false)}></div>
-            <div className="relative w-full max-w-lg bg-white rounded-[3.5rem] shadow-2xl p-12 overflow-hidden animate-in zoom-in duration-300">
-               <div className="absolute top-0 right-0 w-32 h-32 bg-slate-50 rounded-full blur-3xl -mr-16 -mt-16"></div>
-               <div className="flex items-center gap-4 mb-8"><div className="w-12 h-12 bg-slate-50 text-slate-600 rounded-2xl flex items-center justify-center shadow-sm"><CalendarDays size={24}/></div><h4 className="text-2xl font-black text-slate-900 uppercase tracking-tight">Register School Closing</h4></div>
-               <form className="space-y-8" onSubmit={(e) => { e.preventDefault(); setIsClosingModalOpen(false); }}>
-                  <div className="space-y-2"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-2">Scheduled Closing Date</label><input type="date" value={academicSchedule.closingDate} onChange={(e) => setAcademicSchedule({...academicSchedule, closingDate: e.target.value})} className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-6 py-4 text-slate-900 font-black text-lg outline-none focus:ring-4 focus:ring-[#3d0413]/5 focus:border-[#3d0413] transition-all" required /></div>
-                  <div className="pt-4 flex gap-4"><button type="button" onClick={() => setIsClosingModalOpen(false)} className="flex-1 py-5 bg-slate-100 text-slate-500 rounded-2xl font-black uppercase text-[10px] tracking-widest hover:bg-slate-200 transition-all">CANCEL</button><button type="submit" className="flex-1 py-5 bg-[#3d0413] text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-xl hover:bg-black transition-all">COMMIT CLOSING</button></div>
-               </form>
-            </div>
-         </div>
-       )}
+                 </form>
+              </div>
+           </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,13 +1,23 @@
-
 import React, { useState } from 'react';
+import { User } from '../types';
+import { School, Library as LibraryIcon } from 'lucide-react';
 
 interface HeroProps {
+  user: User;
   onSearch: (q: string) => void;
   onBrowse: () => void;
+  onViewDashboard: (tab?: 'PHYSICAL' | 'ONLINE') => void;
 }
 
-const Hero: React.FC<HeroProps> = ({ onSearch, onBrowse }) => {
+const Hero: React.FC<HeroProps> = ({ user, onSearch, onBrowse, onViewDashboard }) => {
   const [val, setVal] = useState('');
+
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good Morning';
+    if (hour < 17) return 'Good Afternoon';
+    return 'Good Evening';
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,15 +36,38 @@ const Hero: React.FC<HeroProps> = ({ onSearch, onBrowse }) => {
         <div className="inline-block px-4 py-1.5 mb-8 rounded-full bg-white/10 border border-white/20 backdrop-blur-md">
            <span className="text-[10px] font-black uppercase tracking-[0.4em] text-rose-300">Institutional Digital Hub</span>
         </div>
-        <h1 className="text-4xl md:text-7xl font-black mb-8 leading-[1.1] tracking-tighter">
-          Elevate Your <br />
+        <h1 className="text-4xl md:text-7xl font-black mb-8 leading-[1.1] tracking-tighter uppercase">
+          {getGreeting()}, <br />
           <span className="text-transparent bg-clip-text bg-gradient-to-r from-rose-500 to-red-600">
-            Technical Future
+            {user.name}
           </span>
         </h1>
         <p className="text-slate-400 text-lg md:text-xl mb-12 max-w-2xl mx-auto font-medium leading-relaxed">
           The ultimate repository of lecture notes, past exams, and technical manuals specifically curated for the polytechnic community.
         </p>
+
+        {/* Navigation Containers */}
+        <div className="flex flex-wrap justify-center gap-4 mb-12 animate-in fade-in slide-in-from-bottom-4 duration-1000">
+          <button 
+            className="group px-10 py-5 bg-white/5 border border-white/10 backdrop-blur-xl rounded-[2rem] flex items-center gap-4 hover:bg-rose-900/20 hover:border-rose-500/30 transition-all duration-500 shadow-2xl active:scale-95"
+            onClick={() => onViewDashboard('PHYSICAL')}
+          >
+            <div className="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center text-rose-400 group-hover:scale-110 transition-transform">
+              <School size={20} />
+            </div>
+            <span className="text-[11px] font-black uppercase tracking-[0.3em] text-white">My Class</span>
+          </button>
+
+          <button 
+            className="group px-10 py-5 bg-white/5 border border-white/10 backdrop-blur-xl rounded-[2rem] flex items-center gap-4 hover:bg-rose-900/20 hover:border-rose-500/30 transition-all duration-500 shadow-2xl active:scale-95"
+            onClick={onBrowse}
+          >
+            <div className="w-10 h-10 rounded-xl bg-rose-500/10 flex items-center justify-center text-rose-400 group-hover:scale-110 transition-transform">
+              <LibraryIcon size={20} />
+            </div>
+            <span className="text-[11px] font-black uppercase tracking-[0.3em] text-white">Library</span>
+          </button>
+        </div>
 
         <form onSubmit={handleSubmit} className="relative max-w-2xl mx-auto group">
           <input
